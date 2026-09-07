@@ -1,5 +1,5 @@
 """
-F02 人工显示测试。
+F02 / F03 人工 GUI 测试。
 
 验证链路：
 
@@ -14,6 +14,8 @@ ETOPOAnalyzerMainWindow
 ETOPOMapCanvas
     ↓
 Pan / Zoom In / Zoom Out / Full Extent
+    ↓
+Point Query / Status Bar Result
 
 本文件属于人工 GUI 测试，
 不参与 unittest 自动发现。
@@ -76,7 +78,7 @@ RASTER_PATH = (
 
 def main() -> int:
     """
-    执行 F02 主窗口与地图工具人工测试。
+    执行 F02 / F03 主窗口与地图工具人工测试。
     """
 
     if not RASTER_PATH.is_file():
@@ -162,11 +164,12 @@ def main() -> int:
         window.show()
 
         print(
-            "\nF02 main window started."
+            "\nF02 / F03 main window started."
         )
 
         print(
-            "请依次测试：平移、放大、缩小、全图。"
+            "请先点击“单点查询”，再在地图上单击一次；"
+            "查询结果将显示在窗口底部状态栏。"
         )
 
         print(
