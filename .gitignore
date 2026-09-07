@@ -1,0 +1,63 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Testing / cache
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# OS
+# =========================
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# =========================
+# ETOPO2022 raw data
+# 大型原始数据禁止提交到 Git
+# =========================
+data/*
+!data/README.md
+
+# =========================
+# Generated outputs
+# =========================
+outputs/*
+!outputs/.gitkeep
+
+# =========================
+# Temporary GIS files
+# =========================
+*.aux.xml
+*.ovr
+*.tmp
+*.bak
+*.log
+
+# =========================
+# Build / package
+# =========================
+build/
+dist/
+*.egg-info/
