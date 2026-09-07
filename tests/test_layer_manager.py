@@ -93,8 +93,6 @@ class TestLayerManager(unittest.TestCase):
 
         QgsProject.instance().clear()
 
-        cls.qgs.exitQgis()
-
     def tearDown(self):
 
         QgsProject.instance().clear()
