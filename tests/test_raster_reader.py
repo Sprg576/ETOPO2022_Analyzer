@@ -231,7 +231,194 @@ class TestRasterReader(unittest.TestCase):
         )
 
 
+
+class TestNetCDFRasterReader(unittest.TestCase):
+    """
+    ETOPO2022 NetCDF 元数据读取测试。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+
+        cls.data_path = (
+            PROJECT_ROOT
+            / "data"
+            / "raw"
+            / "ETOPO_2022_v1_60s_N90W180_surface.nc"
+        )
+
+        if not cls.data_path.is_file():
+            raise FileNotFoundError(
+                f"NetCDF 测试数据不存在：{cls.data_path}"
+            )
+
+        cls.metadata = read_raster_metadata(
+            str(cls.data_path)
+        )
+
+    def test_driver(self):
+
+        self.assertEqual(
+            self.metadata["driver_short_name"],
+            "netCDF",
+        )
+
+        self.assertEqual(
+            self.metadata["driver_long_name"],
+            "Network Common Data Format",
+        )
+
+    def test_dimensions(self):
+
+        self.assertEqual(
+            self.metadata["width"],
+            21600,
+        )
+
+        self.assertEqual(
+            self.metadata["height"],
+            10800,
+        )
+
+        self.assertEqual(
+            self.metadata["band_count"],
+            1,
+        )
+
+    def test_geotransform(self):
+
+        geotransform = self.metadata[
+            "geotransform"
+        ]
+
+        expected = (
+            -180.0,
+            1.0 / 60.0,
+            0.0,
+            90.0,
+            0.0,
+            -1.0 / 60.0,
+        )
+
+        for actual, expected_value in zip(
+            geotransform,
+            expected,
+        ):
+            self.assertAlmostEqual(
+                actual,
+                expected_value,
+                places=12,
+            )
+
+    def test_bounds(self):
+
+        west, south, east, north = (
+            self.metadata["bounds"]
+        )
+
+        self.assertAlmostEqual(
+            west,
+            -180.0,
+            places=8,
+        )
+
+        self.assertAlmostEqual(
+            south,
+            -90.0,
+            places=8,
+        )
+
+        self.assertAlmostEqual(
+            east,
+            180.0,
+            places=8,
+        )
+
+        self.assertAlmostEqual(
+            north,
+            90.0,
+            places=8,
+        )
+
+    def test_horizontal_crs(self):
+
+        self.assertEqual(
+            self.metadata["crs_name"],
+            "WGS 84",
+        )
+
+        self.assertEqual(
+            self.metadata["crs_authority"],
+            "EPSG:4326",
+        )
+
+    def test_vertical_crs(self):
+
+        self.assertEqual(
+            self.metadata["vertical_crs_name"],
+            "EGM2008",
+        )
+
+        self.assertEqual(
+            self.metadata["vertical_crs_epsg"],
+            "EPSG:3855",
+        )
+
+    def test_subdatasets(self):
+
+        self.assertEqual(
+            self.metadata["subdatasets"],
+            [],
+        )
+
+    def test_band_metadata(self):
+
+        bands = self.metadata["bands"]
+
+        self.assertEqual(
+            len(bands),
+            1,
+        )
+
+        band = bands[0]
+
+        self.assertEqual(
+            band["data_type"],
+            "Float32",
+        )
+
+        self.assertEqual(
+            band["nodata"],
+            -99999.0,
+        )
+
+        self.assertIsNone(
+            band["scale"]
+        )
+
+        self.assertIsNone(
+            band["offset"]
+        )
+
+        self.assertEqual(
+            band["unit"],
+            "meters",
+        )
+
+        self.assertEqual(
+            band["block_size"],
+            [2700, 1350],
+        )
+
+        self.assertEqual(
+            band["variable_name"],
+            "z",
+        )
+
 if __name__ == "__main__":
     unittest.main(
         verbosity=2
     )
+
+
+    
