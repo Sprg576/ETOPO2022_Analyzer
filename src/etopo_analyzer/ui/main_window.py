@@ -112,6 +112,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         self._point_query_tool = None
         self._rectangle_selection_tool = None
+
+        # active 保存 F03/F04 分析源；display 保存当前画面图层。
         self._active_raster_path = None
         self._active_raster_layer = None
         self._display_raster_layer = None
@@ -531,6 +533,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             )
             return
 
+        # 裁剪结果成为新的分析源，后续查询和分析都以它为准。
         self.show_layer(
             output_layer
         )
@@ -611,6 +614,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         try:
+            # 始终从活动分析 DEM 建立米制中间数据。
             projection_result = (
                 project_raster_to_local_utm(
                     self._active_raster_path,
@@ -664,6 +668,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             )
             return
 
+        # Hillshade 只改变显示组合，不替换 F03/F04 的分析源。
         self.map_canvas.show_layers(
             [
                 hillshade_layer,
@@ -729,6 +734,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         try:
+            # 坡度和坡向都从当前活动分析 DEM 开始计算。
             projection_result = (
                 project_raster_to_local_utm(
                     self._active_raster_path,
@@ -768,6 +774,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             )
             return
 
+        # 只更新显示层，不调用 show_layer()，避免改写 F03/F04 数据源。
         self.map_canvas.show_layer(
             analysis_layer
         )
@@ -783,6 +790,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             if analysis_key == "aspect"
             else None
         )
+        # 派生结果使用自己的色带，不能再套用 ETOPO 高程色带。
         self.color_relief_action.setEnabled(False)
         self.map_canvas.activate_pan()
         self.pan_action.setChecked(True)
@@ -826,6 +834,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             layer
         )
 
+        # 只有正式加载或裁剪结果才能更新活动分析数据。
         self._active_raster_path = layer.source()
         self._active_raster_layer = layer
         self._display_raster_layer = layer

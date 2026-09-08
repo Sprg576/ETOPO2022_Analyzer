@@ -67,6 +67,7 @@ def _calculate_bounds(
 
         return x, y
 
+    # 四角计算同时支持北向上和带旋转项的 GeoTransform。
     corners = [
         pixel_to_geo(0, 0),
         pixel_to_geo(width, 0),
@@ -279,6 +280,7 @@ def read_raster_metadata(
         # NetCDF Subdatasets
         # -------------------------------------------------
 
+        # NetCDF 可能只是容器，实际变量以子数据集形式提供。
         raw_subdatasets = (
             dataset.GetSubDatasets()
             or []
@@ -300,6 +302,7 @@ def read_raster_metadata(
 
         bands = []
 
+        # 只读取波段描述信息，不调用 ReadAsArray()。
         for band_index in range(
             1,
             band_count + 1,
@@ -414,6 +417,7 @@ def read_raster_metadata(
         return metadata
 
     finally:
+        # 显式释放 GDAL 数据集，避免 Windows 文件句柄残留。
         dataset = None
 
 

@@ -17,6 +17,7 @@ from qgis.core import (
 )
 
 
+# 固定高程节点保证不同区域中相同颜色代表相同高程。
 ETOPO_COLOR_RELIEF = (
     (-11000.0, "#081D58", "深海沟"),
     (-6000.0, "#0B3C8C", "深海"),
@@ -55,6 +56,7 @@ def apply_etopo_color_relief(
     _validate_raster_layer(layer)
 
     color_ramp_shader = QgsColorRampShader()
+    # 高程是连续变量，节点之间使用线性颜色插值。
     color_ramp_shader.setColorRampType(
         QgsColorRampShader.Interpolated
     )
@@ -111,6 +113,7 @@ def configure_hillshade_overlay(
     renderer.setOpacity(opacity)
 
     layer.setRenderer(renderer)
+    # 正片叠底保留彩色 DEM，同时叠加明暗起伏。
     layer.setBlendMode(
         QPainter.CompositionMode_Multiply
     )

@@ -102,6 +102,7 @@ def _open_source_dataset(
             f"GDAL 无法打开文件：{input_path}"
         )
 
+    # 优先读取直接波段；NetCDF 容器可能需要指定子数据集。
     if dataset.RasterCount > 0:
         return dataset
 
@@ -171,6 +172,7 @@ def _bounds_to_source_coordinates(
             always_xy=True,
         )
 
+        # 四角都参与转换，可兼容旋转或投影后的栅格范围。
         geographic_corners = [
             (west, north),
             (east, north),
@@ -357,6 +359,7 @@ def clip_raster_by_bounds(
             for point in pixel_corners
         ]
 
+        # 起点向外取整、终点向外扩展，并限制在源栅格范围内。
         column_start = max(
             0,
             math.floor(min(pixel_xs)),
@@ -390,6 +393,7 @@ def clip_raster_by_bounds(
             exist_ok=True,
         )
 
+        # srcWin 让 GDAL 只复制目标像元窗口，不读取完整栅格。
         translate_options = gdal.TranslateOptions(
             format="GTiff",
             srcWin=[

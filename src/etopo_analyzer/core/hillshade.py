@@ -79,6 +79,7 @@ def _wgs84_bounds(dataset) -> tuple[float, float, float, float]:
             "源栅格缺少 CRS。"
         )
 
+    # 使用四角而不是只取对角点，以兼容旋转 GeoTransform。
     source_corners = [
         gdal.ApplyGeoTransform(
             geotransform,
@@ -94,6 +95,7 @@ def _wgs84_bounds(dataset) -> tuple[float, float, float, float]:
     ]
 
     try:
+        # 局部投影只处理水平坐标，保留高程数值但不转换垂直基准。
         source_crs = CRS.from_wkt(
             spatial_ref.ExportToWkt()
         ).to_2d()
@@ -145,6 +147,7 @@ def _local_utm_epsg(
     longitude_span = east - west
     latitude_span = north - south
 
+    # 单个 UTM 分区宽约 6°，超过该范围应先裁剪。
     if (
         longitude_span > MAX_LOCAL_SPAN_DEGREES
         or latitude_span > MAX_LOCAL_SPAN_DEGREES
@@ -212,6 +215,7 @@ def project_raster_to_local_utm(
             .GetNoDataValue()
         )
 
+        # 高程连续变化，投影重采样采用双线性插值。
         warp_options = {
             "format": "GTiff",
             "srcSRS": source_crs.to_wkt(),
@@ -225,6 +229,7 @@ def project_raster_to_local_utm(
             ],
         }
 
+        # 保留源 NoData，防止无效区域参与后续地形计算。
         if nodata is not None:
             warp_options["dstNodata"] = nodata
 
@@ -301,6 +306,7 @@ def generate_hillshade(
 
     spatial_ref = dataset.GetSpatialRef()
 
+    # 经纬度的“度”不能直接作为 Hillshade 的水平距离单位。
     if (
         spatial_ref is None
         or not spatial_ref.IsProjected()
@@ -319,6 +325,7 @@ def generate_hillshade(
     output_dataset = None
 
     try:
+        # zFactor=1 表示水平距离和高程都使用米。
         options = gdal.DEMProcessingOptions(
             format="GTiff",
             computeEdges=True,

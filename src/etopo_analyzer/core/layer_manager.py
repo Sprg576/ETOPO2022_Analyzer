@@ -63,6 +63,7 @@ def create_raster_layer(
     if layer_name is None:
         layer_name = path.stem
 
+    # 此函数只创建图层，不会自动加入全局 QgsProject。
     layer = QgsRasterLayer(
         str(path),
         layer_name,
@@ -104,6 +105,7 @@ def add_raster_layer(
         layer_name=layer_name,
     )
 
+    # 加入项目后，QGIS 才会统一管理图层生命周期。
     QgsProject.instance().addMapLayer(
         layer
     )

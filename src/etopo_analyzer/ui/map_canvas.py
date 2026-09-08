@@ -94,8 +94,10 @@ class ETOPOMapCanvas(QgsMapCanvas):
                     f"无效图层：{layer.name()}"
                 )
 
+        # QgsMapCanvas 按列表顺序从上到下叠放图层。
         self.setLayers(layers)
 
+        # 最底层作为范围和目标 CRS 的参考图层。
         reference_layer = layers[-1]
 
         # QgsMapCanvas 是二维地图画布。

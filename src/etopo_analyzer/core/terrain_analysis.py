@@ -75,6 +75,7 @@ def _open_projected_meter_dem(
 
     spatial_ref = dataset.GetSpatialRef()
 
+    # 坡度和坡向必须在水平单位为米的投影坐标系中计算。
     if (
         spatial_ref is None
         or not spatial_ref.IsProjected()
@@ -114,6 +115,7 @@ def generate_slope(
     output_dataset = None
 
     try:
+        # 水平和垂直单位均为米，因此固定 zFactor=1。
         options = gdal.DEMProcessingOptions(
             format="GTiff",
             band=1,
@@ -184,6 +186,7 @@ def generate_aspect(
     output_dataset = None
 
     try:
+        # 使用方位角：北为 0°，顺时针增加；平地写入 NoData。
         options = gdal.DEMProcessingOptions(
             format="GTiff",
             band=1,

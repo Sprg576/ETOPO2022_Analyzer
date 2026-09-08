@@ -17,6 +17,7 @@ from qgis.core import (
 )
 
 
+# Discrete 模式使用每一项的数值作为该等级的上限。
 SLOPE_COLOR_CLASSES = (
     (2.0, "#1A9850", "0–2° 平坦"),
     (5.0, "#66BD63", "2–5° 缓坡"),
@@ -28,6 +29,7 @@ SLOPE_COLOR_CLASSES = (
 )
 
 
+# 北向跨越 0°边界，因此在色带首尾使用同一种颜色。
 ASPECT_DIRECTION_CLASSES = (
     (22.5, "#E41A1C", "N"),
     (67.5, "#FF7F00", "NE"),
@@ -64,12 +66,14 @@ def _apply_discrete_renderer(
 
     _validate_raster_layer(layer)
 
+    # Flat / NoData 由源波段掩膜处理，不进入普通颜色分级。
     layer.dataProvider().setUseSourceNoDataValue(
         1,
         True,
     )
 
     color_ramp_shader = QgsColorRampShader()
+    # 离散着色避免在相邻等级或方向之间产生错误的渐变。
     color_ramp_shader.setColorRampType(
         QgsColorRampShader.Discrete
     )

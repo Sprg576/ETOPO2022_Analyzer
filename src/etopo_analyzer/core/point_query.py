@@ -76,6 +76,7 @@ def _open_query_dataset(
             f"GDAL 无法打开文件：{path}"
         )
 
+    # GeoTIFF 通常可直接读取；部分 NetCDF 需要打开指定子数据集。
     if dataset.RasterCount > 0:
         return dataset
 
@@ -133,6 +134,7 @@ def _to_raster_coordinates(
         )
 
     try:
+        # 查询只涉及水平位置，忽略复合 CRS 中的垂直分量。
         raster_crs = CRS.from_wkt(
             spatial_ref.ExportToWkt()
         ).to_2d()
@@ -253,6 +255,7 @@ def query_point_elevation(
                 "栅格 GeoTransform 无法求逆。"
             )
 
+        # 逆 GeoTransform 把地图坐标转换为浮点像元行列号。
         pixel_x, pixel_y = gdal.ApplyGeoTransform(
             inverse_geotransform,
             raster_x,
@@ -271,6 +274,7 @@ def query_point_elevation(
             )
 
         band = dataset.GetRasterBand(1)
+        # 仅读取目标 1×1 像元，避免加载全球栅格。
         values = band.ReadAsArray(
             column,
             row,
@@ -303,6 +307,7 @@ def query_point_elevation(
             if offset is None:
                 offset = 0.0
 
+            # 应用波段自带的比例和偏移得到真实高程值。
             elevation = (
                 raw_value * float(scale)
                 + float(offset)

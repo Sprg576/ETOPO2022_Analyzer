@@ -63,6 +63,7 @@ class PointQueryMapTool(QgsMapTool):
     ) -> tuple[float, float]:
         """把 Canvas 地图坐标转换为 EPSG:4326 经纬度。"""
 
+        # Canvas CRS 会随当前显示结果变化，因此每次查询都重新获取。
         canvas_crs = (
             self.canvas()
             .mapSettings()
@@ -109,6 +110,7 @@ class PointQueryMapTool(QgsMapTool):
             )
         )
 
+        # 坐标统一为经纬度后，仍查询创建工具时绑定的分析栅格。
         return query_point_elevation(
             self._raster_path,
             longitude,

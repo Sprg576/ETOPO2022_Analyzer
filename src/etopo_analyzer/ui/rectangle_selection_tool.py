@@ -111,6 +111,7 @@ class RectangleSelectionMapTool(QgsMapTool):
             Qgis.GeometryType.Polygon
         )
 
+        # 重复首点以闭合矩形边界。
         closed_corners = corners + [corners[0]]
 
         for index, point in enumerate(closed_corners):
@@ -150,6 +151,7 @@ class RectangleSelectionMapTool(QgsMapTool):
                 "Canvas destination CRS 无效。"
             )
 
+        # 派生图层可能使用 UTM，框选结果仍统一返回经纬度。
         if canvas_crs == WGS84_CRS:
             geographic_corners = corners
         else:
@@ -229,6 +231,7 @@ class RectangleSelectionMapTool(QgsMapTool):
     def canvasReleaseEvent(self, event) -> None:
         """完成左键矩形框选并发送经纬度范围。"""
 
+        # 单击或直线拖拽没有可裁剪面积。
         if (
             event.button() != Qt.LeftButton
             or not self._dragging
