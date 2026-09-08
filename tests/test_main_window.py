@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,12 +27,22 @@ from qgis.PyQt.QtCore import Qt
 
 from qgis.core import (
     QgsApplication,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
     QgsPointXY,
     QgsProject,
+    QgsSingleBandGrayRenderer,
+    QgsSingleBandPseudoColorRenderer,
 )
 
 from etopo_analyzer.core.layer_manager import (
     create_raster_layer,
+)
+from etopo_analyzer.core.point_query import (
+    query_point_elevation,
+)
+from etopo_analyzer.core.raster_clip import (
+    clip_raster_by_bounds,
 )
 
 from etopo_analyzer.ui.main_window import (
@@ -79,10 +90,6 @@ class TestMainWindowPointQuery(unittest.TestCase):
 
             cls.qgs.initQgis()
 
-        cls.layer = create_raster_layer(
-            str(RASTER_PATH)
-        )
-
         cls.temp_directory = tempfile.TemporaryDirectory()
         cls.temp_path = Path(cls.temp_directory.name)
 
@@ -94,6 +101,9 @@ class TestMainWindowPointQuery(unittest.TestCase):
     def setUp(self):
         QgsProject.instance().clear()
 
+        self.layer = create_raster_layer(
+            str(RASTER_PATH)
+        )
         self.window = ETOPOAnalyzerMainWindow()
 
         self.window._clip_output_directory = (
@@ -103,6 +113,7 @@ class TestMainWindowPointQuery(unittest.TestCase):
     def tearDown(self):
         self.window.close()
         self.window = None
+        self.layer = None
         QgsProject.instance().clear()
 
     def test_point_query_is_enabled_after_show_layer(self):
@@ -302,6 +313,217 @@ class TestMainWindowPointQuery(unittest.TestCase):
 
         self.assertTrue(
             self.window.pan_action.isChecked()
+        )
+
+    def test_color_relief_is_enabled_after_show_layer(self):
+        self.assertFalse(
+            self.window.color_relief_action.isEnabled()
+        )
+
+        self.window.show_layer(self.layer)
+
+        self.assertTrue(
+            self.window.color_relief_action.isEnabled()
+        )
+
+    def test_color_relief_action_applies_renderer(self):
+        self.window.show_layer(self.layer)
+
+        self.window.color_relief_action.trigger()
+
+        self.assertIsInstance(
+            self.layer.renderer(),
+            QgsSingleBandPseudoColorRenderer,
+        )
+        self.assertEqual(
+            self.window.statusBar().currentMessage(),
+            "分层设色完成：已应用固定陆海地形色带。",
+        )
+
+    def test_hillshade_is_enabled_after_show_layer(self):
+        self.assertFalse(
+            self.window.hillshade_action.isEnabled()
+        )
+
+        self.window.show_layer(self.layer)
+
+        self.assertTrue(
+            self.window.hillshade_action.isEnabled()
+        )
+
+    def test_local_hillshade_is_combined_with_color_dem(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+
+        analysis_path = self.window._active_raster_path
+        analysis_layer = self.window._active_raster_layer
+        point_query_tool = self.window._point_query_tool
+        rectangle_selection_tool = (
+            self.window._rectangle_selection_tool
+        )
+
+        self.window.hillshade_action.trigger()
+
+        canvas_layers = self.window.map_canvas.layers()
+        self.assertEqual(len(canvas_layers), 2)
+
+        hillshade_layer = canvas_layers[0]
+        projected_layer = canvas_layers[1]
+
+        self.assertIsInstance(
+            hillshade_layer.renderer(),
+            QgsSingleBandGrayRenderer,
+        )
+        self.assertIsInstance(
+            projected_layer.renderer(),
+            QgsSingleBandPseudoColorRenderer,
+        )
+        self.assertEqual(
+            projected_layer.crs().authid(),
+            "EPSG:32651",
+        )
+        self.assertEqual(
+            self.window._active_raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._active_raster_layer,
+            analysis_layer,
+        )
+        self.assertIs(
+            self.window._display_raster_layer,
+            projected_layer,
+        )
+        self.assertIs(
+            self.window._hillshade_layer,
+            hillshade_layer,
+        )
+        self.assertIs(
+            self.window._point_query_tool,
+            point_query_tool,
+        )
+        self.assertIs(
+            self.window._rectangle_selection_tool,
+            rectangle_selection_tool,
+        )
+        self.assertTrue(
+            Path(projected_layer.source()).is_file()
+        )
+        self.assertTrue(
+            Path(hillshade_layer.source()).is_file()
+        )
+        self.assertTrue(
+            self.window.statusBar()
+            .currentMessage()
+            .startswith(
+                "Hillshade 完成：EPSG:32651"
+            )
+        )
+
+    def test_point_query_still_uses_analysis_raster_after_hillshade(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+        analysis_path = self.window._active_raster_path
+
+        self.window.create_hillshade()
+
+        self.assertEqual(
+            self.window._point_query_tool._raster_path,
+            analysis_path,
+        )
+
+        to_canvas_crs = QgsCoordinateTransform(
+            QgsCoordinateReferenceSystem("EPSG:4326"),
+            self.window.map_canvas.mapSettings().destinationCrs(),
+            QgsProject.instance(),
+        )
+        canvas_point = to_canvas_crs.transform(
+            QgsPointXY(120.5, 30.5)
+        )
+        result = self.window._point_query_tool.query_map_point(
+            canvas_point
+        )
+        expected = query_point_elevation(
+            analysis_path,
+            120.5,
+            30.5,
+        )
+
+        self.assertAlmostEqual(
+            result["longitude"],
+            expected["longitude"],
+            places=9,
+        )
+        self.assertAlmostEqual(
+            result["latitude"],
+            expected["latitude"],
+            places=9,
+        )
+        self.assertEqual(
+            result["column"],
+            expected["column"],
+        )
+        self.assertEqual(
+            result["row"],
+            expected["row"],
+        )
+        self.assertEqual(
+            result["elevation"],
+            expected["elevation"],
+        )
+        self.assertEqual(
+            result["depth"],
+            expected["depth"],
+        )
+        self.assertEqual(
+            result["is_nodata"],
+            expected["is_nodata"],
+        )
+
+    def test_rectangle_clip_still_uses_analysis_raster_after_hillshade(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+        analysis_path = self.window._active_raster_path
+
+        self.window.create_hillshade()
+
+        with patch(
+            "etopo_analyzer.ui.main_window.clip_raster_by_bounds",
+            wraps=clip_raster_by_bounds,
+        ) as clip_mock:
+            self.window._clip_selected_bounds(
+                {
+                    "west": 120.25,
+                    "south": 30.25,
+                    "east": 120.75,
+                    "north": 30.75,
+                }
+            )
+
+        self.assertEqual(
+            clip_mock.call_args.args[0],
+            analysis_path,
         )
 
 

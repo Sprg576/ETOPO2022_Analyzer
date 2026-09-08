@@ -3,7 +3,7 @@ ETOPO2022 系统主 GIS 地图画布。
 
 当前阶段功能：
 1. 封装 QgsMapCanvas
-2. 显示单个有效 QGIS 图层
+2. 显示单个图层或多个叠加图层
 3. 自动缩放至图层范围
 4. 对复合 CRS 使用水平 CRS 作为二维地图目标 CRS
 5. 提供地图平移（Pan）工具
@@ -66,22 +66,41 @@ class ETOPOMapCanvas(QgsMapCanvas):
         在地图画布中显示一个图层。
         """
 
-        if layer is None:
+        self.show_layers(
+            [layer],
+            zoom_to_layer=zoom_to_layer,
+        )
+
+    def show_layers(
+        self,
+        layers: list[QgsMapLayer],
+        zoom_to_layer: bool = True,
+    ) -> None:
+        """按从上到下的顺序显示一个或多个有效图层。"""
+
+        if not layers:
             raise ValueError(
                 "待显示图层不能为空。"
             )
 
-        if not layer.isValid():
-            raise RuntimeError(
-                f"无效图层：{layer.name()}"
-            )
+        for layer in layers:
+            if layer is None:
+                raise ValueError(
+                    "待显示图层不能为空。"
+                )
 
-        # 设置地图中的图层。
-        self.setLayers([layer])
+            if not layer.isValid():
+                raise RuntimeError(
+                    f"无效图层：{layer.name()}"
+                )
+
+        self.setLayers(layers)
+
+        reference_layer = layers[-1]
 
         # QgsMapCanvas 是二维地图画布。
         # 对 EPSG:9518 等复合 CRS，只使用其水平 CRS。
-        layer_crs = layer.crs()
+        layer_crs = reference_layer.crs()
 
         if layer_crs.isValid():
             horizontal_crs = (
@@ -99,7 +118,7 @@ class ETOPOMapCanvas(QgsMapCanvas):
 
         if zoom_to_layer:
             self.setExtent(
-                layer.extent()
+                reference_layer.extent()
             )
 
         self.refresh()

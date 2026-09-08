@@ -5,6 +5,7 @@ ETOPO2022 Analyzer 主窗口。
 F02 基础地图浏览界面。
 F03 单点高程 / 水深查询。
 F04 经纬度矩形区域裁剪。
+F05 地形与海底地形可视化。
 
 已提供：
 1. QgsMapCanvas 主地图
@@ -14,6 +15,8 @@ F04 经纬度矩形区域裁剪。
 5. Full Extent
 6. Point Query
 7. Rectangle Clip
+8. Color Relief
+9. Local UTM Hillshade
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from qgis.PyQt.QtWidgets import (
     QToolBar,
 )
 
-from qgis.core import QgsMapLayer
+from qgis.core import QgsMapLayer, QgsProject
 
 from etopo_analyzer.core.layer_manager import (
     add_raster_layer,
@@ -36,6 +39,11 @@ from etopo_analyzer.core.layer_manager import (
 
 from etopo_analyzer.core.raster_clip import (
     clip_raster_by_bounds,
+)
+
+from etopo_analyzer.core.hillshade import (
+    generate_hillshade,
+    project_raster_to_local_utm,
 )
 
 from etopo_analyzer.ui.map_canvas import (
@@ -48,6 +56,11 @@ from etopo_analyzer.ui.point_query_tool import (
 
 from etopo_analyzer.ui.rectangle_selection_tool import (
     RectangleSelectionMapTool,
+)
+
+from etopo_analyzer.visualization.terrain_renderer import (
+    apply_etopo_color_relief,
+    configure_hillshade_overlay,
 )
 
 
@@ -87,6 +100,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._point_query_tool = None
         self._rectangle_selection_tool = None
         self._active_raster_path = None
+        self._active_raster_layer = None
+        self._display_raster_layer = None
+        self._hillshade_layer = None
         self._clip_output_directory = (
             DEFAULT_CLIP_OUTPUT_DIR
         )
@@ -265,6 +281,50 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # -------------------------------------------------
+        # Color Relief
+        # -------------------------------------------------
+
+        self.color_relief_action = QAction(
+            "分层设色",
+            self,
+        )
+
+        self.color_relief_action.setEnabled(
+            False
+        )
+
+        self.color_relief_action.triggered.connect(
+            self.apply_color_relief
+        )
+
+        toolbar.addAction(
+            self.color_relief_action
+        )
+
+        # -------------------------------------------------
+        # Hillshade
+        # -------------------------------------------------
+
+        self.hillshade_action = QAction(
+            "山体阴影",
+            self,
+        )
+
+        self.hillshade_action.setEnabled(
+            False
+        )
+
+        self.hillshade_action.triggered.connect(
+            self.create_hillshade
+        )
+
+        toolbar.addAction(
+            self.hillshade_action
+        )
+
+        toolbar.addSeparator()
+
+        # -------------------------------------------------
         # Full Extent
         # -------------------------------------------------
 
@@ -436,6 +496,135 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             f"框选失败：{message}"
         )
 
+    def apply_color_relief(self) -> None:
+        """为当前高程图层应用固定陆海分层设色。"""
+
+        if self._display_raster_layer is None:
+            return
+
+        try:
+            apply_etopo_color_relief(
+                self._display_raster_layer
+            )
+        except (ValueError, RuntimeError) as exc:
+            self.statusBar().showMessage(
+                f"分层设色失败：{exc}"
+            )
+            return
+
+        self.map_canvas.refresh()
+        self.statusBar().showMessage(
+            "分层设色完成：已应用固定陆海地形色带。"
+        )
+
+    def _next_hillshade_output_paths(
+        self,
+    ) -> tuple[Path, Path]:
+        """生成本次局部投影和 Hillshade 输出路径。"""
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )
+
+        projected_path = (
+            self._clip_output_directory
+            / f"ETOPO2022_utm_{timestamp}.tif"
+        )
+        hillshade_path = (
+            self._clip_output_directory
+            / f"ETOPO2022_hillshade_{timestamp}.tif"
+        )
+
+        return projected_path, hillshade_path
+
+    def create_hillshade(self) -> None:
+        """生成局部米制 DEM，并与 Hillshade 组合显示。"""
+
+        if self._active_raster_path is None:
+            return
+
+        projected_path, hillshade_path = (
+            self._next_hillshade_output_paths()
+        )
+        projected_layer = None
+        hillshade_layer = None
+
+        self.statusBar().showMessage(
+            "正在建立局部米制投影并生成 Hillshade……"
+        )
+
+        try:
+            projection_result = (
+                project_raster_to_local_utm(
+                    self._active_raster_path,
+                    str(projected_path),
+                )
+            )
+            hillshade_result = generate_hillshade(
+                projection_result["output_path"],
+                str(hillshade_path),
+            )
+
+            projected_layer = add_raster_layer(
+                projection_result["output_path"],
+                projected_path.stem,
+            )
+            hillshade_layer = add_raster_layer(
+                hillshade_result["output_path"],
+                hillshade_path.stem,
+            )
+
+            apply_etopo_color_relief(
+                projected_layer
+            )
+            configure_hillshade_overlay(
+                hillshade_layer
+            )
+        except (
+            FileNotFoundError,
+            FileExistsError,
+            ValueError,
+            RuntimeError,
+        ) as exc:
+            for layer in (
+                hillshade_layer,
+                projected_layer,
+            ):
+                if layer is not None:
+                    QgsProject.instance().removeMapLayer(
+                        layer.id()
+                    )
+
+            for path in (
+                hillshade_path,
+                projected_path,
+            ):
+                if path.exists():
+                    path.unlink()
+
+            self.statusBar().showMessage(
+                f"Hillshade 生成失败：{exc}"
+            )
+            return
+
+        self.map_canvas.show_layers(
+            [
+                hillshade_layer,
+                projected_layer,
+            ]
+        )
+        self._display_raster_layer = projected_layer
+        self._hillshade_layer = hillshade_layer
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+
+        self.statusBar().showMessage(
+            "Hillshade 完成："
+            f"EPSG:{projection_result['target_epsg']} | "
+            f"{hillshade_result['width']} × "
+            f"{hillshade_result['height']} 像元"
+        )
+
     def show_layer(
         self,
         layer: QgsMapLayer,
@@ -449,6 +638,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self._active_raster_path = layer.source()
+        self._active_raster_layer = layer
+        self._display_raster_layer = layer
+        self._hillshade_layer = None
 
         self._point_query_tool = (
             PointQueryMapTool(
@@ -484,5 +676,13 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self.rectangle_clip_action.setEnabled(
+            True
+        )
+
+        self.color_relief_action.setEnabled(
+            True
+        )
+
+        self.hillshade_action.setEnabled(
             True
         )
