@@ -1,5 +1,5 @@
 """
-F02 / F03 人工 GUI 测试。
+F02 / F03 / F04 人工 GUI 测试。
 
 验证链路：
 
@@ -16,6 +16,8 @@ ETOPOMapCanvas
 Pan / Zoom In / Zoom Out / Full Extent
     ↓
 Point Query / Status Bar Result
+    ↓
+Rectangle Clip / Auto-load Result Layer
 
 本文件属于人工 GUI 测试，
 不参与 unittest 自动发现。
@@ -78,7 +80,7 @@ RASTER_PATH = (
 
 def main() -> int:
     """
-    执行 F02 / F03 主窗口与地图工具人工测试。
+    执行 F02 / F03 / F04 主窗口与地图工具人工测试。
     """
 
     if not RASTER_PATH.is_file():
@@ -164,12 +166,17 @@ def main() -> int:
         window.show()
 
         print(
-            "\nF02 / F03 main window started."
+            "\nF02 / F03 / F04 main window started."
         )
 
         print(
             "请先点击“单点查询”，再在地图上单击一次；"
             "查询结果将显示在窗口底部状态栏。"
+        )
+
+        print(
+            "点击“矩形裁剪”后拖拽一个小矩形；"
+            "结果将保存到 outputs 并自动加载到地图。"
         )
 
         print(

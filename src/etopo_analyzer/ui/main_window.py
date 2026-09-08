@@ -4,6 +4,7 @@ ETOPO2022 Analyzer 主窗口。
 当前阶段：
 F02 基础地图浏览界面。
 F03 单点高程 / 水深查询。
+F04 经纬度矩形区域裁剪。
 
 已提供：
 1. QgsMapCanvas 主地图
@@ -12,9 +13,13 @@ F03 单点高程 / 水深查询。
 4. Zoom Out
 5. Full Extent
 6. Point Query
+7. Rectangle Clip
 """
 
 from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
 
 from qgis.PyQt.QtWidgets import (
     QAction,
@@ -25,6 +30,14 @@ from qgis.PyQt.QtWidgets import (
 
 from qgis.core import QgsMapLayer
 
+from etopo_analyzer.core.layer_manager import (
+    add_raster_layer,
+)
+
+from etopo_analyzer.core.raster_clip import (
+    clip_raster_by_bounds,
+)
+
 from etopo_analyzer.ui.map_canvas import (
     ETOPOMapCanvas,
 )
@@ -32,6 +45,14 @@ from etopo_analyzer.ui.map_canvas import (
 from etopo_analyzer.ui.point_query_tool import (
     PointQueryMapTool,
 )
+
+from etopo_analyzer.ui.rectangle_selection_tool import (
+    RectangleSelectionMapTool,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_CLIP_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 
 
 class ETOPOAnalyzerMainWindow(QMainWindow):
@@ -64,6 +85,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self._point_query_tool = None
+        self._rectangle_selection_tool = None
+        self._active_raster_path = None
+        self._clip_output_directory = (
+            DEFAULT_CLIP_OUTPUT_DIR
+        )
 
         # -------------------------------------------------
         # 地图工具栏
@@ -207,6 +233,35 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             self.point_query_action
         )
 
+        # -------------------------------------------------
+        # Rectangle Clip
+        # -------------------------------------------------
+
+        self.rectangle_clip_action = QAction(
+            "矩形裁剪",
+            self,
+        )
+
+        self.rectangle_clip_action.setCheckable(
+            True
+        )
+
+        self.rectangle_clip_action.setEnabled(
+            False
+        )
+
+        self.rectangle_clip_action.triggered.connect(
+            self.activate_rectangle_clip
+        )
+
+        tool_group.addAction(
+            self.rectangle_clip_action
+        )
+
+        toolbar.addAction(
+            self.rectangle_clip_action
+        )
+
         toolbar.addSeparator()
 
         # -------------------------------------------------
@@ -289,6 +344,98 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             f"查询失败：{message}"
         )
 
+    def activate_rectangle_clip(self) -> None:
+        """激活经纬度矩形裁剪工具。"""
+
+        if self._rectangle_selection_tool is None:
+            return
+
+        self.map_canvas.setMapTool(
+            self._rectangle_selection_tool
+        )
+
+        self.statusBar().showMessage(
+            "矩形裁剪：请按住左键拖拽选择范围。"
+        )
+
+    def _next_clip_output_path(self) -> Path:
+        """生成不会覆盖已有文件的裁剪输出路径。"""
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )
+
+        return (
+            self._clip_output_directory
+            / f"ETOPO2022_clip_{timestamp}.tif"
+        )
+
+    def _clip_selected_bounds(
+        self,
+        bounds: dict,
+    ) -> None:
+        """裁剪框选范围并自动加载结果图层。"""
+
+        if self._active_raster_path is None:
+            self.statusBar().showMessage(
+                "裁剪失败：当前没有可裁剪的栅格图层。"
+            )
+            return
+
+        output_path = self._next_clip_output_path()
+
+        self.statusBar().showMessage(
+            "正在裁剪，请稍候……"
+        )
+
+        try:
+            result = clip_raster_by_bounds(
+                self._active_raster_path,
+                str(output_path),
+                bounds["west"],
+                bounds["south"],
+                bounds["east"],
+                bounds["north"],
+            )
+
+            output_layer = add_raster_layer(
+                result["output_path"],
+                output_path.stem,
+            )
+        except (
+            FileNotFoundError,
+            FileExistsError,
+            KeyError,
+            ValueError,
+            RuntimeError,
+        ) as exc:
+            self.statusBar().showMessage(
+                f"裁剪失败：{exc}"
+            )
+            return
+
+        self.show_layer(
+            output_layer
+        )
+
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+
+        self.statusBar().showMessage(
+            f"裁剪完成：{output_path.name} | "
+            f"{result['width']} × {result['height']} 像元"
+        )
+
+    def _show_rectangle_selection_error(
+        self,
+        message: str,
+    ) -> None:
+        """在状态栏显示矩形框选错误。"""
+
+        self.statusBar().showMessage(
+            f"框选失败：{message}"
+        )
+
     def show_layer(
         self,
         layer: QgsMapLayer,
@@ -300,6 +447,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.map_canvas.show_layer(
             layer
         )
+
+        self._active_raster_path = layer.source()
 
         self._point_query_tool = (
             PointQueryMapTool(
@@ -317,5 +466,23 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self.point_query_action.setEnabled(
+            True
+        )
+
+        self._rectangle_selection_tool = (
+            RectangleSelectionMapTool(
+                self.map_canvas
+            )
+        )
+
+        self._rectangle_selection_tool.rectangle_selected.connect(
+            self._clip_selected_bounds
+        )
+
+        self._rectangle_selection_tool.selection_failed.connect(
+            self._show_rectangle_selection_error
+        )
+
+        self.rectangle_clip_action.setEnabled(
             True
         )

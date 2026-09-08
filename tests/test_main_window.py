@@ -10,6 +10,7 @@ QGIS Python 3.12
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -82,16 +83,27 @@ class TestMainWindowPointQuery(unittest.TestCase):
             str(RASTER_PATH)
         )
 
+        cls.temp_directory = tempfile.TemporaryDirectory()
+        cls.temp_path = Path(cls.temp_directory.name)
+
     @classmethod
     def tearDownClass(cls):
         QgsProject.instance().clear()
+        cls.temp_directory.cleanup()
 
     def setUp(self):
+        QgsProject.instance().clear()
+
         self.window = ETOPOAnalyzerMainWindow()
+
+        self.window._clip_output_directory = (
+            self.temp_path / self._testMethodName
+        )
 
     def tearDown(self):
         self.window.close()
         self.window = None
+        QgsProject.instance().clear()
 
     def test_point_query_is_enabled_after_show_layer(self):
         self.assertFalse(
@@ -176,6 +188,120 @@ class TestMainWindowPointQuery(unittest.TestCase):
         self.assertEqual(
             self.window.statusBar().currentMessage(),
             "查询失败：测试错误",
+        )
+
+    def test_rectangle_clip_is_enabled_after_show_layer(self):
+        self.assertFalse(
+            self.window.rectangle_clip_action.isEnabled()
+        )
+
+        self.window.show_layer(
+            self.layer
+        )
+
+        self.assertTrue(
+            self.window.rectangle_clip_action.isEnabled()
+        )
+
+        self.assertIsNotNone(
+            self.window._rectangle_selection_tool
+        )
+
+    def test_rectangle_clip_action_activates_map_tool(self):
+        self.window.show_layer(
+            self.layer
+        )
+
+        self.window.rectangle_clip_action.trigger()
+
+        self.assertIs(
+            self.window.map_canvas.mapTool(),
+            self.window._rectangle_selection_tool,
+        )
+
+        self.assertEqual(
+            self.window.statusBar().currentMessage(),
+            "矩形裁剪：请按住左键拖拽选择范围。",
+        )
+
+    def test_real_rectangle_clip_is_auto_loaded(self):
+        self.window.show_layer(
+            self.layer
+        )
+
+        self.window.rectangle_clip_action.trigger()
+
+        rectangle_tool = (
+            self.window._rectangle_selection_tool
+        )
+
+        rectangle_tool.canvasPressEvent(
+            FakeMapMouseEvent(
+                QgsPointXY(120.0, 30.0)
+            )
+        )
+
+        rectangle_tool.canvasMoveEvent(
+            FakeMapMouseEvent(
+                QgsPointXY(121.0, 31.0)
+            )
+        )
+
+        rectangle_tool.canvasReleaseEvent(
+            FakeMapMouseEvent(
+                QgsPointXY(121.0, 31.0)
+            )
+        )
+
+        canvas_layers = self.window.map_canvas.layers()
+
+        self.assertEqual(
+            len(canvas_layers),
+            1,
+        )
+
+        output_layer = canvas_layers[0]
+
+        self.assertTrue(
+            output_layer.isValid()
+        )
+
+        self.assertEqual(
+            output_layer.width(),
+            60,
+        )
+
+        self.assertEqual(
+            output_layer.height(),
+            60,
+        )
+
+        self.assertIn(
+            output_layer.id(),
+            QgsProject.instance().mapLayers(),
+        )
+
+        output_path = Path(
+            output_layer.source()
+        )
+
+        self.assertTrue(
+            output_path.is_file()
+        )
+
+        self.assertEqual(
+            output_path.parent,
+            self.window._clip_output_directory,
+        )
+
+        self.assertEqual(
+            self.window.statusBar().currentMessage(),
+            f"裁剪完成：{output_path.name} | "
+            "60 × 60 像元",
+        )
+
+        self.assertTrue(
+            self.window.pan_action.isChecked()
         )
 
 
