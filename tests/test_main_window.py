@@ -526,6 +526,193 @@ class TestMainWindowPointQuery(unittest.TestCase):
             analysis_path,
         )
 
+    def test_terrain_analysis_actions_are_enabled_after_show_layer(self):
+        self.assertFalse(
+            self.window.slope_action.isEnabled()
+        )
+        self.assertFalse(
+            self.window.aspect_action.isEnabled()
+        )
+
+        self.window.show_layer(self.layer)
+
+        self.assertTrue(
+            self.window.slope_action.isEnabled()
+        )
+        self.assertTrue(
+            self.window.aspect_action.isEnabled()
+        )
+
+    def test_slope_is_displayed_without_replacing_analysis_raster(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+        analysis_path = self.window._active_raster_path
+        analysis_layer = self.window._active_raster_layer
+        point_query_tool = self.window._point_query_tool
+        rectangle_selection_tool = (
+            self.window._rectangle_selection_tool
+        )
+
+        self.window.slope_action.trigger()
+
+        canvas_layers = self.window.map_canvas.layers()
+        self.assertEqual(len(canvas_layers), 1)
+        slope_layer = canvas_layers[0]
+        renderer = slope_layer.renderer()
+
+        self.assertIsInstance(
+            renderer,
+            QgsSingleBandPseudoColorRenderer,
+        )
+        self.assertEqual(
+            len(
+                renderer.shader()
+                .rasterShaderFunction()
+                .colorRampItemList()
+            ),
+            7,
+        )
+        self.assertEqual(
+            slope_layer.crs().authid(),
+            "EPSG:32651",
+        )
+        self.assertEqual(
+            self.window._active_raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._active_raster_layer,
+            analysis_layer,
+        )
+        self.assertEqual(
+            self.window._point_query_tool._raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._point_query_tool,
+            point_query_tool,
+        )
+        self.assertIs(
+            self.window._rectangle_selection_tool,
+            rectangle_selection_tool,
+        )
+        self.assertIs(
+            self.window._display_raster_layer,
+            slope_layer,
+        )
+        self.assertIs(
+            self.window._slope_layer,
+            slope_layer,
+        )
+        self.assertIsNone(self.window._aspect_layer)
+        self.assertIsNone(self.window._hillshade_layer)
+        self.assertFalse(
+            self.window.color_relief_action.isEnabled()
+        )
+        self.assertTrue(
+            Path(slope_layer.source()).is_file()
+        )
+        self.assertTrue(
+            self.window.statusBar()
+            .currentMessage()
+            .startswith(
+                "坡度完成：EPSG:32651"
+            )
+        )
+
+    def test_aspect_is_displayed_without_replacing_analysis_raster(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+        analysis_path = self.window._active_raster_path
+        analysis_layer = self.window._active_raster_layer
+        point_query_tool = self.window._point_query_tool
+        rectangle_selection_tool = (
+            self.window._rectangle_selection_tool
+        )
+
+        self.window.aspect_action.trigger()
+
+        canvas_layers = self.window.map_canvas.layers()
+        self.assertEqual(len(canvas_layers), 1)
+        aspect_layer = canvas_layers[0]
+        renderer = aspect_layer.renderer()
+
+        self.assertIsInstance(
+            renderer,
+            QgsSingleBandPseudoColorRenderer,
+        )
+        items = (
+            renderer.shader()
+            .rasterShaderFunction()
+            .colorRampItemList()
+        )
+        self.assertEqual(len(items), 9)
+        self.assertEqual(
+            items[0].color.name().upper(),
+            items[-1].color.name().upper(),
+        )
+        self.assertEqual(
+            aspect_layer.crs().authid(),
+            "EPSG:32651",
+        )
+        self.assertEqual(
+            self.window._active_raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._active_raster_layer,
+            analysis_layer,
+        )
+        self.assertEqual(
+            self.window._point_query_tool._raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._point_query_tool,
+            point_query_tool,
+        )
+        self.assertIs(
+            self.window._rectangle_selection_tool,
+            rectangle_selection_tool,
+        )
+        self.assertIs(
+            self.window._display_raster_layer,
+            aspect_layer,
+        )
+        self.assertIsNone(self.window._slope_layer)
+        self.assertIs(
+            self.window._aspect_layer,
+            aspect_layer,
+        )
+        self.assertIsNone(self.window._hillshade_layer)
+        self.assertFalse(
+            self.window.color_relief_action.isEnabled()
+        )
+        self.assertTrue(
+            Path(aspect_layer.source()).is_file()
+        )
+        self.assertTrue(
+            self.window.statusBar()
+            .currentMessage()
+            .startswith(
+                "坡向完成：EPSG:32651"
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

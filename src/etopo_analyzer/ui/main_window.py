@@ -6,6 +6,7 @@ F02 基础地图浏览界面。
 F03 单点高程 / 水深查询。
 F04 经纬度矩形区域裁剪。
 F05 地形与海底地形可视化。
+F06 坡度与坡向分析。
 
 已提供：
 1. QgsMapCanvas 主地图
@@ -17,6 +18,8 @@ F05 地形与海底地形可视化。
 7. Rectangle Clip
 8. Color Relief
 9. Local UTM Hillshade
+10. Slope
+11. Aspect
 """
 
 from __future__ import annotations
@@ -46,6 +49,11 @@ from etopo_analyzer.core.hillshade import (
     project_raster_to_local_utm,
 )
 
+from etopo_analyzer.core.terrain_analysis import (
+    generate_aspect,
+    generate_slope,
+)
+
 from etopo_analyzer.ui.map_canvas import (
     ETOPOMapCanvas,
 )
@@ -61,6 +69,11 @@ from etopo_analyzer.ui.rectangle_selection_tool import (
 from etopo_analyzer.visualization.terrain_renderer import (
     apply_etopo_color_relief,
     configure_hillshade_overlay,
+)
+
+from etopo_analyzer.visualization.terrain_analysis_renderer import (
+    apply_aspect_direction_colors,
+    apply_slope_color_relief,
 )
 
 
@@ -103,6 +116,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._active_raster_layer = None
         self._display_raster_layer = None
         self._hillshade_layer = None
+        self._slope_layer = None
+        self._aspect_layer = None
         self._clip_output_directory = (
             DEFAULT_CLIP_OUTPUT_DIR
         )
@@ -320,6 +335,48 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         toolbar.addAction(
             self.hillshade_action
+        )
+
+        # -------------------------------------------------
+        # Slope
+        # -------------------------------------------------
+
+        self.slope_action = QAction(
+            "坡度",
+            self,
+        )
+
+        self.slope_action.setEnabled(
+            False
+        )
+
+        self.slope_action.triggered.connect(
+            self.create_slope
+        )
+
+        toolbar.addAction(
+            self.slope_action
+        )
+
+        # -------------------------------------------------
+        # Aspect
+        # -------------------------------------------------
+
+        self.aspect_action = QAction(
+            "坡向",
+            self,
+        )
+
+        self.aspect_action.setEnabled(
+            False
+        )
+
+        self.aspect_action.triggered.connect(
+            self.create_aspect
+        )
+
+        toolbar.addAction(
+            self.aspect_action
         )
 
         toolbar.addSeparator()
@@ -615,6 +672,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
         self._display_raster_layer = projected_layer
         self._hillshade_layer = hillshade_layer
+        self._slope_layer = None
+        self._aspect_layer = None
+        self.color_relief_action.setEnabled(True)
         self.map_canvas.activate_pan()
         self.pan_action.setChecked(True)
 
@@ -623,6 +683,135 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             f"EPSG:{projection_result['target_epsg']} | "
             f"{hillshade_result['width']} × "
             f"{hillshade_result['height']} 像元"
+        )
+
+    def _next_terrain_analysis_output_paths(
+        self,
+        analysis_key: str,
+    ) -> tuple[Path, Path]:
+        """生成坡度或坡向分析的输出路径。"""
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )
+        projected_path = (
+            self._clip_output_directory
+            / f"ETOPO2022_{analysis_key}_utm_{timestamp}.tif"
+        )
+        analysis_path = (
+            self._clip_output_directory
+            / f"ETOPO2022_{analysis_key}_{timestamp}.tif"
+        )
+
+        return projected_path, analysis_path
+
+    def _create_terrain_analysis(
+        self,
+        analysis_key: str,
+        analysis_label: str,
+        generate_analysis,
+        apply_renderer,
+    ) -> None:
+        """生成、设色并显示一个局部地形分析结果。"""
+
+        if self._active_raster_path is None:
+            return
+
+        projected_path, analysis_path = (
+            self._next_terrain_analysis_output_paths(
+                analysis_key
+            )
+        )
+        analysis_layer = None
+
+        self.statusBar().showMessage(
+            f"正在建立局部米制投影并生成{analysis_label}……"
+        )
+
+        try:
+            projection_result = (
+                project_raster_to_local_utm(
+                    self._active_raster_path,
+                    str(projected_path),
+                )
+            )
+            analysis_result = generate_analysis(
+                projection_result["output_path"],
+                str(analysis_path),
+            )
+            analysis_layer = add_raster_layer(
+                analysis_result["output_path"],
+                analysis_path.stem,
+            )
+            apply_renderer(analysis_layer)
+        except (
+            FileNotFoundError,
+            FileExistsError,
+            ValueError,
+            RuntimeError,
+        ) as exc:
+            if analysis_layer is not None:
+                QgsProject.instance().removeMapLayer(
+                    analysis_layer.id()
+                )
+                analysis_layer = None
+
+            for path in (
+                analysis_path,
+                projected_path,
+            ):
+                if path.exists():
+                    path.unlink()
+
+            self.statusBar().showMessage(
+                f"{analysis_label}生成失败：{exc}"
+            )
+            return
+
+        self.map_canvas.show_layer(
+            analysis_layer
+        )
+        self._display_raster_layer = analysis_layer
+        self._hillshade_layer = None
+        self._slope_layer = (
+            analysis_layer
+            if analysis_key == "slope"
+            else None
+        )
+        self._aspect_layer = (
+            analysis_layer
+            if analysis_key == "aspect"
+            else None
+        )
+        self.color_relief_action.setEnabled(False)
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+
+        self.statusBar().showMessage(
+            f"{analysis_label}完成："
+            f"EPSG:{projection_result['target_epsg']} | "
+            f"{analysis_result['width']} × "
+            f"{analysis_result['height']} 像元"
+        )
+
+    def create_slope(self) -> None:
+        """生成局部坡度并应用固定分级色带。"""
+
+        self._create_terrain_analysis(
+            "slope",
+            "坡度",
+            generate_slope,
+            apply_slope_color_relief,
+        )
+
+    def create_aspect(self) -> None:
+        """生成局部坡向并应用循环方向色带。"""
+
+        self._create_terrain_analysis(
+            "aspect",
+            "坡向",
+            generate_aspect,
+            apply_aspect_direction_colors,
         )
 
     def show_layer(
@@ -641,6 +830,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._active_raster_layer = layer
         self._display_raster_layer = layer
         self._hillshade_layer = None
+        self._slope_layer = None
+        self._aspect_layer = None
 
         self._point_query_tool = (
             PointQueryMapTool(
@@ -684,5 +875,13 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self.hillshade_action.setEnabled(
+            True
+        )
+
+        self.slope_action.setEnabled(
+            True
+        )
+
+        self.aspect_action.setEnabled(
             True
         )
