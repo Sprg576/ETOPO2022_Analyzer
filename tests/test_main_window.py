@@ -38,6 +38,9 @@ from qgis.core import (
 from etopo_analyzer.core.layer_manager import (
     create_raster_layer,
 )
+from etopo_analyzer.core.hillshade import (
+    generate_hillshade,
+)
 from etopo_analyzer.core.point_query import (
     query_point_elevation,
 )
@@ -131,6 +134,153 @@ class TestMainWindowPointQuery(unittest.TestCase):
 
         self.assertIsNotNone(
             self.window._point_query_tool
+        )
+
+    def test_workspace_uses_docks_and_compact_toolbar(self):
+        self.assertEqual(
+            self.window.layer_dock.objectName(),
+            "LayerDock",
+        )
+        self.assertEqual(
+            self.window.analysis_dock.objectName(),
+            "AnalysisDock",
+        )
+
+        toolbar_actions = {
+            action.text()
+            for action in self.window.map_toolbar.actions()
+            if not action.isSeparator()
+        }
+        self.assertEqual(
+            toolbar_actions,
+            {
+                "打开栅格",
+                "全图",
+                "平移",
+                "放大",
+                "缩小",
+                "单点查询",
+                "矩形裁剪",
+                "取消任务",
+            },
+        )
+        self.assertNotIn(
+            self.window.slope_action,
+            self.window.map_toolbar.actions(),
+        )
+        self.assertFalse(
+            self.window.open_raster_action.icon().isNull()
+        )
+        self.assertIs(
+            self.window.centralWidget(),
+            self.window.map_tabs,
+        )
+        self.assertEqual(
+            self.window.map_tabs.tabText(0),
+            "地图视图",
+        )
+        self.assertFalse(
+            self.window.cancel_task_action.isEnabled()
+        )
+
+    def test_show_layer_updates_layer_tree_and_status_details(self):
+        self.window.show_layer(self.layer)
+
+        layer_item = self.window._layer_items[
+            self.layer.id()
+        ]
+        self.assertEqual(
+            layer_item.checkState(0),
+            Qt.Checked,
+        )
+        self.assertEqual(
+            layer_item.parent().text(0),
+            "源数据",
+        )
+        self.assertFalse(layer_item.icon(0).isNull())
+        self.assertIs(
+            self.window.layer_tree.currentItem(),
+            layer_item,
+        )
+        self.assertEqual(
+            self.window.layer_properties_table.rowCount(),
+            8,
+        )
+        self.assertEqual(
+            self.window.layer_properties_table.item(0, 0).text(),
+            "名称",
+        )
+        self.assertEqual(
+            self.window.layer_properties_table.item(0, 1).text(),
+            self.layer.name(),
+        )
+        self.assertEqual(
+            self.window.analysis_source_label.accessibleName(),
+            RASTER_PATH.name,
+        )
+        self.assertIn(
+            "EPSG:4326",
+            self.window.crs_status_label.text(),
+        )
+        self.assertEqual(
+            self.window.analysis_crs_label.text(),
+            "EPSG:4326",
+        )
+        self.assertEqual(
+            self.window.analysis_size_label.text(),
+            f"{self.layer.width()} × {self.layer.height()}",
+        )
+        self.assertNotEqual(
+            self.window.resolution_status_label.text(),
+            "分辨率：--",
+        )
+
+    def test_layer_visibility_does_not_replace_analysis_source(self):
+        self.window.show_layer(self.layer)
+        analysis_path = self.window._active_raster_path
+        analysis_layer = self.window._active_raster_layer
+        layer_item = self.window._layer_items[
+            self.layer.id()
+        ]
+
+        layer_item.setCheckState(0, Qt.Unchecked)
+        self.assertEqual(
+            len(self.window.map_canvas.layers()),
+            0,
+        )
+        self.assertEqual(
+            self.window._active_raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._active_raster_layer,
+            analysis_layer,
+        )
+
+        layer_item.setCheckState(0, Qt.Checked)
+        self.assertEqual(
+            self.window.map_canvas.layers(),
+            [self.layer],
+        )
+        self.assertEqual(
+            self.window._active_raster_path,
+            analysis_path,
+        )
+
+    def test_open_action_loads_selected_raster(self):
+        with patch(
+            "etopo_analyzer.ui.main_window.QFileDialog.getOpenFileName",
+            return_value=(str(RASTER_PATH), ""),
+        ):
+            self.window.open_raster_action.trigger()
+
+        self.assertEqual(
+            Path(self.window._active_raster_path),
+            RASTER_PATH.resolve(),
+        )
+        self.assertEqual(
+            self.window.statusBar().currentMessage(),
+            f"已加载：{RASTER_PATH.name}",
         )
 
     def test_point_query_action_activates_map_tool(self):
@@ -369,7 +519,23 @@ class TestMainWindowPointQuery(unittest.TestCase):
             self.window._rectangle_selection_tool
         )
 
-        self.window.hillshade_action.trigger()
+        self.window.hillshade_azimuth_spin.setValue(300.0)
+        self.window.hillshade_altitude_spin.setValue(40.0)
+
+        with patch(
+            "etopo_analyzer.ui.main_window.generate_hillshade",
+            wraps=generate_hillshade,
+        ) as generate_mock:
+            self.window.hillshade_action.trigger()
+
+        self.assertEqual(
+            generate_mock.call_args.kwargs["azimuth"],
+            300.0,
+        )
+        self.assertEqual(
+            generate_mock.call_args.kwargs["altitude"],
+            40.0,
+        )
 
         canvas_layers = self.window.map_canvas.layers()
         self.assertEqual(len(canvas_layers), 2)
@@ -425,6 +591,10 @@ class TestMainWindowPointQuery(unittest.TestCase):
             .startswith(
                 "Hillshade 完成：EPSG:32651"
             )
+        )
+        self.assertIn(
+            "方位角 300.0° | 高度角 40.0°",
+            self.window.statusBar().currentMessage(),
         )
 
     def test_point_query_still_uses_analysis_raster_after_hillshade(self):
