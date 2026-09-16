@@ -20,6 +20,7 @@ F06 坡度与坡向分析。
 9. Local UTM Hillshade
 10. Slope
 11. Aspect
+12. Contours
 """
 
 from __future__ import annotations
@@ -56,7 +57,13 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from qgis.core import QgsMapLayer, QgsProject
+from qgis.core import (
+    QgsMapLayer,
+    QgsProject,
+    QgsRasterLayer,
+    QgsVectorLayer,
+    QgsWkbTypes,
+)
 
 from etopo_analyzer.core.layer_manager import (
     add_raster_layer,
@@ -74,6 +81,13 @@ from etopo_analyzer.core.hillshade import (
 from etopo_analyzer.core.terrain_analysis import (
     generate_aspect,
     generate_slope,
+)
+
+from etopo_analyzer.core.contour_analysis import (
+    CONTOUR_TYPE_DEPTH,
+    CONTOUR_TYPE_ELEVATION,
+    CONTOUR_TYPE_ZERO,
+    generate_contours,
 )
 
 from etopo_analyzer.ui.map_canvas import (
@@ -98,6 +112,10 @@ from etopo_analyzer.visualization.terrain_renderer import (
 from etopo_analyzer.visualization.terrain_analysis_renderer import (
     apply_aspect_direction_colors,
     apply_slope_color_relief,
+)
+
+from etopo_analyzer.visualization.contour_renderer import (
+    apply_contour_classification,
 )
 
 
@@ -174,6 +192,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._hillshade_layer = None
         self._slope_layer = None
         self._aspect_layer = None
+        self._contour_layer = None
         self._clip_output_directory = (
             DEFAULT_CLIP_OUTPUT_DIR
         )
@@ -484,6 +503,20 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         # -------------------------------------------------
+        # Contours
+        # -------------------------------------------------
+
+        self.contour_action = QAction(
+            self._icon("contour.svg"),
+            "生成等值线",
+            self,
+        )
+        self.contour_action.setEnabled(False)
+        self.contour_action.triggered.connect(
+            self.create_contours
+        )
+
+        # -------------------------------------------------
         # Full Extent
         # -------------------------------------------------
 
@@ -548,6 +581,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         terrain_menu.addSeparator()
         terrain_menu.addAction(self.slope_action)
         terrain_menu.addAction(self.aspect_action)
+        terrain_menu.addSeparator()
+        terrain_menu.addAction(self.contour_action)
 
         for title in (
             "剖面分析(&P)",
@@ -634,6 +669,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "源数据",
             "裁剪结果",
             "派生栅格",
+            "等值线",
             "辅助数据",
         ):
             group_item = QTreeWidgetItem(
@@ -756,7 +792,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         current: QTreeWidgetItem | None,
         previous: QTreeWidgetItem | None,
     ) -> None:
-        """显示图层树当前选中栅格的基本属性。"""
+        """显示图层树当前选中地图图层的基本属性。"""
 
         del previous
 
@@ -782,38 +818,63 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             else layer_crs
         )
         extent = layer.extent()
-        provider = layer.dataProvider()
-        data_type = str(
-            provider.sourceDataType(1)
-        ).removeprefix("DataType.")
+        crs_text = (
+            display_crs.authid()
+            or display_crs.description()
+        )
+        extent_text = (
+            f"W {extent.xMinimum():.4f}  "
+            f"E {extent.xMaximum():.4f}\n"
+            f"S {extent.yMinimum():.4f}  "
+            f"N {extent.yMaximum():.4f}"
+        )
 
-        properties = [
-            ("名称", layer.name()),
-            ("类型", "栅格"),
-            (
-                "分辨率",
-                f"{layer.rasterUnitsPerPixelX():.6g} × "
-                f"{layer.rasterUnitsPerPixelY():.6g}",
-            ),
-            ("波段数", str(layer.bandCount())),
-            ("数据类型", data_type),
-            (
-                "空间参考",
-                display_crs.authid()
-                or display_crs.description(),
-            ),
-            (
-                "行列数",
-                f"{layer.width()} × {layer.height()}",
-            ),
-            (
-                "范围",
-                f"W {extent.xMinimum():.4f}  "
-                f"E {extent.xMaximum():.4f}\n"
-                f"S {extent.yMinimum():.4f}  "
-                f"N {extent.yMaximum():.4f}",
-            ),
-        ]
+        if isinstance(layer, QgsRasterLayer):
+            provider = layer.dataProvider()
+            data_type = str(
+                provider.sourceDataType(1)
+            ).removeprefix("DataType.")
+            properties = [
+                ("名称", layer.name()),
+                ("类型", "栅格"),
+                (
+                    "分辨率",
+                    f"{layer.rasterUnitsPerPixelX():.6g} × "
+                    f"{layer.rasterUnitsPerPixelY():.6g}",
+                ),
+                ("波段数", str(layer.bandCount())),
+                ("数据类型", data_type),
+                ("空间参考", crs_text),
+                (
+                    "行列数",
+                    f"{layer.width()} × {layer.height()}",
+                ),
+                ("范围", extent_text),
+            ]
+        elif isinstance(layer, QgsVectorLayer):
+            properties = [
+                ("名称", layer.name()),
+                (
+                    "类型",
+                    "矢量（"
+                    f"{QgsWkbTypes.displayString(layer.wkbType())}）",
+                ),
+                ("要素数", str(layer.featureCount())),
+                (
+                    "字段",
+                    "、".join(layer.fields().names()),
+                ),
+                ("空间参考", crs_text),
+                ("范围", extent_text),
+            ]
+        else:
+            properties = [
+                ("名称", layer.name()),
+                ("类型", "地图图层"),
+                ("空间参考", crs_text),
+                ("范围", extent_text),
+            ]
+
         self._set_layer_properties(properties)
 
     def _create_analysis_dock(self) -> None:
@@ -1012,6 +1073,75 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             layout,
             "坡度与坡向",
             terrain_content,
+            expanded=False,
+        )
+
+        contour_content = QWidget(container)
+        contour_content.setObjectName("SectionBody")
+        contour_layout = QVBoxLayout(contour_content)
+        contour_layout.setContentsMargins(10, 8, 10, 10)
+        contour_layout.setSpacing(6)
+
+        contour_form = QFormLayout()
+        contour_form.setContentsMargins(0, 0, 0, 2)
+        contour_form.setHorizontalSpacing(8)
+        contour_form.setVerticalSpacing(6)
+
+        self.contour_interval_spin = QDoubleSpinBox(
+            contour_content
+        )
+        self.contour_interval_spin.setObjectName(
+            "ContourIntervalSpin"
+        )
+        self.contour_interval_spin.setRange(1.0, 10000.0)
+        self.contour_interval_spin.setDecimals(1)
+        self.contour_interval_spin.setSingleStep(100.0)
+        self.contour_interval_spin.setValue(500.0)
+        self.contour_interval_spin.setSuffix(" m")
+
+        self.contour_base_spin = QDoubleSpinBox(
+            contour_content
+        )
+        self.contour_base_spin.setObjectName(
+            "ContourBaseSpin"
+        )
+        self.contour_base_spin.setRange(-12000.0, 10000.0)
+        self.contour_base_spin.setDecimals(1)
+        self.contour_base_spin.setSingleStep(100.0)
+        self.contour_base_spin.setValue(0.0)
+        self.contour_base_spin.setSuffix(" m")
+
+        contour_form.addRow(
+            "间隔",
+            self.contour_interval_spin,
+        )
+        contour_form.addRow(
+            "基准值",
+            self.contour_base_spin,
+        )
+        contour_layout.addLayout(contour_form)
+        contour_layout.addWidget(
+            self._panel_button(
+                self.contour_action,
+                primary=True,
+            )
+        )
+
+        contour_hint = QLabel(
+            "直接基于当前 DEM 生成，无需转换 UTM；建议先裁剪局部区域。",
+            contour_content,
+        )
+        contour_hint.setObjectName("PanelHint")
+        contour_hint.setWordWrap(True)
+        contour_hint.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        contour_layout.addWidget(contour_hint)
+        self._add_collapsible_section(
+            layout,
+            "等高线 / 等深线",
+            contour_content,
         )
         layout.addStretch(1)
 
@@ -1027,6 +1157,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         parent_layout: QVBoxLayout,
         title: str,
         content: QWidget,
+        expanded: bool = True,
     ) -> None:
         """向分析面板加入可折叠分段。"""
 
@@ -1034,8 +1165,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         header.setObjectName("SectionHeader")
         header.setText(title)
         header.setCheckable(True)
-        header.setChecked(True)
-        header.setArrowType(Qt.DownArrow)
+        header.setChecked(expanded)
+        header.setArrowType(
+            Qt.DownArrow
+            if expanded
+            else Qt.RightArrow
+        )
         header.setToolButtonStyle(
             Qt.ToolButtonTextBesideIcon
         )
@@ -1044,6 +1179,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
                 self._toggle_section(button, body, checked)
             )
         )
+        content.setVisible(expanded)
         parent_layout.addWidget(header)
         parent_layout.addWidget(content)
 
@@ -1223,6 +1359,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         if group_name == "裁剪结果":
             return self._icon("clip.svg")
+
+        if group_name == "等值线":
+            return self._icon("contour.svg")
 
         layer_key = (
             f"{layer.name()} {layer.source()}"
@@ -1763,6 +1902,120 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             apply_aspect_direction_colors,
         )
 
+    def _next_contour_output_path(self) -> Path:
+        """生成本次等值线 GeoPackage 输出路径。"""
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )
+
+        return (
+            self._clip_output_directory
+            / f"ETOPO2022_contours_{timestamp}.gpkg"
+        )
+
+    def create_contours(self) -> None:
+        """从活动 DEM 生成、设色并叠加显示等值线。"""
+
+        if self._active_raster_path is None:
+            return
+
+        output_path = self._next_contour_output_path()
+        interval = self.contour_interval_spin.value()
+        base = self.contour_base_spin.value()
+        contour_layer = None
+
+        self.statusBar().showMessage(
+            "正在生成等高线 / 等深线……"
+        )
+
+        try:
+            # 等值线直接使用活动 DEM，不进行 UTM 重投影。
+            result = generate_contours(
+                self._active_raster_path,
+                str(output_path),
+                interval=interval,
+                base=base,
+            )
+            layer_source = (
+                f"{result['output_path']}"
+                f"|layername={result['layer_name']}"
+            )
+            contour_layer = QgsVectorLayer(
+                layer_source,
+                output_path.stem,
+                "ogr",
+            )
+
+            if not contour_layer.isValid():
+                raise RuntimeError(
+                    "QGIS 无法加载生成的等值线图层。"
+                )
+
+            QgsProject.instance().addMapLayer(
+                contour_layer
+            )
+            apply_contour_classification(
+                contour_layer
+            )
+        except (
+            FileNotFoundError,
+            FileExistsError,
+            ValueError,
+            RuntimeError,
+        ) as exc:
+            if contour_layer is not None:
+                QgsProject.instance().removeMapLayer(
+                    contour_layer.id()
+                )
+                contour_layer = None
+
+            if output_path.exists():
+                output_path.unlink()
+
+            self.statusBar().showMessage(
+                f"等值线生成失败：{exc}"
+            )
+            return
+
+        visible_layers = [
+            layer
+            for layer in self.map_canvas.layers()
+            if (
+                self._contour_layer is None
+                or layer.id() != self._contour_layer.id()
+            )
+        ]
+
+        if not visible_layers:
+            visible_layers.append(
+                self._active_raster_layer
+            )
+
+        # 矢量结果只叠加显示，不更新活动栅格和查询、裁剪工具。
+        self.map_canvas.show_layers(
+            [contour_layer, *visible_layers],
+            zoom_to_layer=False,
+        )
+        self._contour_layer = contour_layer
+        contour_item = self._register_layer(
+            contour_layer,
+            "等值线",
+        )
+        self._sync_layer_tree_visibility()
+        self.layer_tree.setCurrentItem(contour_item)
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+
+        type_counts = result["type_counts"]
+        self.statusBar().showMessage(
+            "等值线完成："
+            f"间隔 {interval:g} m | "
+            f"等高线 {type_counts[CONTOUR_TYPE_ELEVATION]} | "
+            f"等深线 {type_counts[CONTOUR_TYPE_DEPTH]} | "
+            f"0 m {type_counts[CONTOUR_TYPE_ZERO]}"
+        )
+
     def show_layer(
         self,
         layer: QgsMapLayer,
@@ -1790,6 +2043,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._hillshade_layer = None
         self._slope_layer = None
         self._aspect_layer = None
+        self._contour_layer = None
 
         source_name = Path(layer.source()).name
         # 在下划线和扩展名前允许换行，避免长文件名撑宽参数面板。
@@ -1883,5 +2137,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self.aspect_action.setEnabled(
+            True
+        )
+
+        self.contour_action.setEnabled(
             True
         )

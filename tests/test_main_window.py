@@ -27,12 +27,14 @@ from qgis.PyQt.QtCore import Qt
 
 from qgis.core import (
     QgsApplication,
+    QgsCategorizedSymbolRenderer,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsPointXY,
     QgsProject,
     QgsSingleBandGrayRenderer,
     QgsSingleBandPseudoColorRenderer,
+    QgsVectorLayer,
 )
 
 from etopo_analyzer.core.layer_manager import (
@@ -40,6 +42,9 @@ from etopo_analyzer.core.layer_manager import (
 )
 from etopo_analyzer.core.hillshade import (
     generate_hillshade,
+)
+from etopo_analyzer.core.contour_analysis import (
+    generate_contours,
 )
 from etopo_analyzer.core.point_query import (
     query_point_elevation,
@@ -703,6 +708,17 @@ class TestMainWindowPointQuery(unittest.TestCase):
         self.assertFalse(
             self.window.aspect_action.isEnabled()
         )
+        self.assertFalse(
+            self.window.contour_action.isEnabled()
+        )
+        self.assertEqual(
+            self.window.contour_interval_spin.value(),
+            500.0,
+        )
+        self.assertEqual(
+            self.window.contour_base_spin.value(),
+            0.0,
+        )
 
         self.window.show_layer(self.layer)
 
@@ -711,6 +727,136 @@ class TestMainWindowPointQuery(unittest.TestCase):
         )
         self.assertTrue(
             self.window.aspect_action.isEnabled()
+        )
+        self.assertTrue(
+            self.window.contour_action.isEnabled()
+        )
+
+    def test_contours_are_overlaid_without_replacing_analysis_raster(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+        analysis_path = self.window._active_raster_path
+        analysis_layer = self.window._active_raster_layer
+        display_layer = self.window._display_raster_layer
+        point_query_tool = self.window._point_query_tool
+        rectangle_selection_tool = (
+            self.window._rectangle_selection_tool
+        )
+        self.window.contour_interval_spin.setValue(500.0)
+        self.window.contour_base_spin.setValue(0.0)
+
+        with patch(
+            "etopo_analyzer.ui.main_window.generate_contours",
+            wraps=generate_contours,
+        ) as contour_mock, patch(
+            "etopo_analyzer.ui.main_window.project_raster_to_local_utm"
+        ) as projection_mock:
+            self.window.contour_action.trigger()
+
+        self.assertEqual(
+            contour_mock.call_args.args[0],
+            analysis_path,
+        )
+        self.assertEqual(
+            contour_mock.call_args.kwargs["interval"],
+            500.0,
+        )
+        self.assertEqual(
+            contour_mock.call_args.kwargs["base"],
+            0.0,
+        )
+        projection_mock.assert_not_called()
+
+        contour_layer = self.window._contour_layer
+        self.assertIsInstance(contour_layer, QgsVectorLayer)
+        self.assertIsInstance(
+            contour_layer.renderer(),
+            QgsCategorizedSymbolRenderer,
+        )
+        self.assertEqual(
+            self.window.map_canvas.layers(),
+            [contour_layer, display_layer],
+        )
+        self.assertEqual(
+            self.window._active_raster_path,
+            analysis_path,
+        )
+        self.assertIs(
+            self.window._active_raster_layer,
+            analysis_layer,
+        )
+        self.assertIs(
+            self.window._display_raster_layer,
+            display_layer,
+        )
+        self.assertIs(
+            self.window._point_query_tool,
+            point_query_tool,
+        )
+        self.assertIs(
+            self.window._rectangle_selection_tool,
+            rectangle_selection_tool,
+        )
+        self.assertEqual(
+            self.window._point_query_tool._raster_path,
+            analysis_path,
+        )
+
+        contour_path = Path(
+            contour_layer.source().split("|", 1)[0]
+        )
+        self.assertTrue(contour_path.is_file())
+        self.assertEqual(contour_path.suffix, ".gpkg")
+        self.assertEqual(
+            self.window._layer_items[contour_layer.id()]
+            .parent().text(0),
+            "等值线",
+        )
+        self.assertIn(
+            "矢量（LineString）",
+            self.window.layer_properties_table.item(1, 1).text(),
+        )
+        self.assertIn(
+            "等值线完成：间隔 500 m",
+            self.window.statusBar().currentMessage(),
+        )
+
+    def test_new_contours_replace_previous_visible_contours(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds(
+            {
+                "west": 120.0,
+                "south": 30.0,
+                "east": 121.0,
+                "north": 31.0,
+            }
+        )
+        display_layer = self.window._display_raster_layer
+
+        self.window.create_contours()
+        first_contour = self.window._contour_layer
+        self.window.create_contours()
+        second_contour = self.window._contour_layer
+
+        self.assertNotEqual(
+            first_contour.id(),
+            second_contour.id(),
+        )
+        self.assertEqual(
+            self.window.map_canvas.layers(),
+            [second_contour, display_layer],
+        )
+        self.assertEqual(
+            self.window._layer_items[first_contour.id()]
+            .checkState(0),
+            Qt.Unchecked,
         )
 
     def test_slope_is_displayed_without_replacing_analysis_raster(self):
