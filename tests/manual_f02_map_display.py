@@ -61,6 +61,7 @@ from etopo_analyzer.core.layer_manager import (
     add_raster_layer,
 )
 
+
 from etopo_analyzer.ui.main_window import (
     ETOPOAnalyzerMainWindow,
 )

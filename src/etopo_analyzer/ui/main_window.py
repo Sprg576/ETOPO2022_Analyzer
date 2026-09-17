@@ -28,7 +28,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QSize, Qt
+from qgis.PyQt.QtCore import QSize, Qt, QTimer
 from qgis.PyQt.QtGui import QColor, QIcon
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
@@ -103,6 +103,8 @@ from etopo_analyzer.ui.rectangle_selection_tool import (
 )
 
 from etopo_analyzer.ui.theme import LIGHT_THEME
+from etopo_analyzer.core.profile_analysis import sample_elevation_profile
+from etopo_analyzer.ui.profile_selection_tool import ProfileSelectionMapTool, ProfileOverlay
 
 from etopo_analyzer.visualization.terrain_renderer import (
     apply_etopo_color_relief,
@@ -178,9 +180,18 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "地图视图",
         )
 
-        self.setCentralWidget(
-            self.map_tabs
-        )
+        self.map_splitter = QSplitter(Qt.Vertical, self)
+        self.map_splitter.addWidget(self.map_tabs)
+        self.map_splitter.setChildrenCollapsible(False)
+        self.setCentralWidget(self.map_splitter)
+        self._profile_result = None
+        self._profile_panel = None
+        self._profile_dock = None
+        self._profile_overlay = ProfileOverlay(self.map_canvas)
+        self._profile_tool = ProfileSelectionMapTool(self.map_canvas)
+        self._profile_tool.profile_selected.connect(self.create_profile)
+        self._profile_tool.selection_failed.connect(self._show_profile_error)
+        self._profile_tool.selection_cancelled.connect(self._cancel_profile_selection)
 
         self._point_query_tool = None
         self._rectangle_selection_tool = None
@@ -430,6 +441,19 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             self.rectangle_clip_action
         )
 
+        self.profile_action = QAction(self._icon("profile.svg"), "剖面", self)
+        self.profile_action.setCheckable(True)
+        self.profile_action.setEnabled(False)
+        self.profile_action.triggered.connect(self.activate_profile)
+        self._map_tool_group.addAction(self.profile_action)
+        toolbar.addAction(self.profile_action)
+        self.regenerate_profile_action = QAction("重新生成剖面", self)
+        self.regenerate_profile_action.setEnabled(False)
+        self.regenerate_profile_action.triggered.connect(self.regenerate_profile)
+        self.show_profile_action = QAction("显示剖面图", self)
+        self.show_profile_action.setEnabled(False)
+        self.show_profile_action.triggered.connect(self.show_profile)
+
         # -------------------------------------------------
         # Color Relief
         # -------------------------------------------------
@@ -584,8 +608,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         terrain_menu.addSeparator()
         terrain_menu.addAction(self.contour_action)
 
+        profile_menu = self.menuBar().addMenu("剖面分析(&P)")
+        profile_menu.addAction(self.profile_action)
+        profile_menu.addAction(self.regenerate_profile_action)
+        profile_menu.addAction(self.show_profile_action)
+
         for title in (
-            "剖面分析(&P)",
             "统计分析(&S)",
             "导出(&E)",
         ):
@@ -1143,9 +1171,30 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "等高线 / 等深线",
             contour_content,
         )
+        profile_content = QWidget(container)
+        self._profile_controls = profile_content
+        profile_layout = QVBoxLayout(profile_content)
+        profile_layout.setContentsMargins(10, 8, 10, 10)
+        profile_form = QFormLayout()
+        self.profile_interval_spin = QDoubleSpinBox(profile_content)
+        self.profile_interval_spin.setRange(0.001, 1000.0)
+        self.profile_interval_spin.setDecimals(3)
+        self.profile_interval_spin.setValue(1.0)
+        self.profile_interval_spin.setSuffix(" km")
+        profile_form.addRow("采样间隔", self.profile_interval_spin)
+        profile_layout.addLayout(profile_form)
+        profile_layout.addWidget(self._panel_button(self.profile_action))
+        profile_layout.addWidget(self._panel_button(self.regenerate_profile_action))
+        hint = QLabel("左键加点，右键或双击完成；Esc 取消绘制。", profile_content)
+        hint.setWordWrap(True)
+        hint.setObjectName("PanelHint")
+        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        profile_layout.addWidget(hint)
+        self._add_collapsible_section(layout, "地形 / 海底剖面", profile_content)
         layout.addStretch(1)
 
         scroll_area.setWidget(container)
+        self._analysis_scroll = scroll_area
         self.analysis_dock.setWidget(scroll_area)
         self.addDockWidget(
             Qt.RightDockWidgetArea,
@@ -2016,6 +2065,89 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             f"0 m {type_counts[CONTOUR_TYPE_ZERO]}"
         )
 
+    def activate_profile(self) -> None:
+        """从当前地图开始绘制，保留上一条成功剖面。"""
+        if self._active_raster_path is None:
+            return
+        self._profile_tool.clear()
+        self._profile_tool._finished = False
+        self.map_canvas.setMapTool(self._profile_tool)
+        self.profile_action.setChecked(True)
+        self._analysis_scroll.ensureWidgetVisible(self._profile_controls)
+        self.statusBar().showMessage("剖面：左键加点，右键或双击完成，Esc 取消。")
+
+    def _cancel_profile_selection(self) -> None:
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+        self.statusBar().showMessage("已取消剖面绘制。")
+
+    def _show_profile_error(self, message) -> None:
+        self.statusBar().showMessage(f"剖面分析失败：{message}")
+
+    def create_profile(self, vertices) -> None:
+        """先完成采样和绘图，再替换成功结果；仅读取活动 DEM。"""
+        if self._active_raster_path is None:
+            return
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+        self.statusBar().showMessage("正在生成地形 / 海底剖面……")
+        try:
+            result = sample_elevation_profile(
+                self._active_raster_path, vertices,
+                self.profile_interval_spin.value() * 1000.0,
+            )
+            # 第一次使用时再导入 Matplotlib，避免拖慢普通启动。
+            from etopo_analyzer.visualization.profile_plot import create_profile_figure
+            from etopo_analyzer.ui.profile_panel import ProfilePanel
+            figure = create_profile_figure(result)
+            if self._profile_panel is None:
+                self._profile_panel = ProfilePanel(self)
+                self._profile_dock = QDockWidget("地形 / 海底剖面", self)
+                self._profile_dock.setObjectName("ProfileDock")
+                self._profile_dock.setMinimumHeight(220)
+                self._profile_dock.setFeatures(QDockWidget.DockWidgetClosable)
+                self._profile_dock.setWidget(self._profile_panel)
+                self.map_splitter.addWidget(self._profile_dock)
+            self._profile_panel.set_figure(figure)
+        except (ValueError, RuntimeError, OSError, ImportError) as exc:
+            self._show_profile_error(str(exc))
+            return
+        self._profile_result = result
+        self._profile_overlay.set_vertices(result["vertices"])
+        self.regenerate_profile_action.setEnabled(True)
+        self.show_profile_action.setEnabled(True)
+        self.show_profile()
+        self.statusBar().showMessage(
+            f"剖面完成：{result['total_distance_m'] / 1000:.2f} km | "
+            f"采样 {result['sample_count']} 点 | 有效 {result['valid_sample_count']} 点"
+        )
+
+    def regenerate_profile(self) -> None:
+        if self._profile_result is not None:
+            self.create_profile(self._profile_result["vertices"])
+
+    def show_profile(self) -> None:
+        if self._profile_dock is not None:
+            self._profile_dock.show()
+            # 等布局完成后分配高度，避免首次显示时图表被压扁。
+            QTimer.singleShot(0, self._resize_profile_panes)
+
+    def _resize_profile_panes(self) -> None:
+        height = max(self.map_splitter.height(), 400)
+        self.map_splitter.setSizes([int(height * 0.65), int(height * 0.35)])
+        self._analysis_scroll.ensureWidgetVisible(self._profile_controls)
+
+    def _clear_profile(self) -> None:
+        """分析源变化后清除旧来源结果。"""
+        self._profile_tool.clear()
+        self._profile_overlay.clear()
+        self._profile_result = None
+        self.regenerate_profile_action.setEnabled(False)
+        self.show_profile_action.setEnabled(False)
+        if self._profile_panel is not None:
+            self._profile_panel.clear()
+            self._profile_dock.hide()
+
     def show_layer(
         self,
         layer: QgsMapLayer,
@@ -2037,6 +2169,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.layer_tree.setCurrentItem(layer_item)
 
         # 只有正式加载或裁剪结果才能更新活动分析数据。
+        self._clear_profile()
+        self.profile_action.setEnabled(True)
         self._active_raster_path = layer.source()
         self._active_raster_layer = layer
         self._display_raster_layer = layer

@@ -124,6 +124,58 @@ class TestMainWindowPointQuery(unittest.TestCase):
         self.layer = None
         QgsProject.instance().clear()
 
+    def test_profile_action_and_cancel(self):
+        self.assertFalse(self.window.profile_action.isEnabled())
+        self.window.show_layer(self.layer)
+        self.window.profile_action.trigger()
+        self.assertIs(self.window.map_canvas.mapTool(), self.window._profile_tool)
+        self.window._profile_tool.selection_cancelled.emit()
+        self.assertTrue(self.window.pan_action.isChecked())
+
+    def test_profile_uses_active_dem_and_retains_previous_on_failure(self):
+        self.window.show_layer(self.layer)
+        path = self.window._active_raster_path
+        query_tool = self.window._point_query_tool
+        clip_tool = self.window._rectangle_selection_tool
+        layers = self.window.map_canvas.layers()
+        self.window.create_profile([(120.5, 23.5), (123, 23.5)])
+        result = self.window._profile_result
+        self.assertIsNotNone(result)
+        self.assertEqual(result["raster_path"], str(Path(path).resolve()))
+        self.assertTrue(any(value < 0 for value in result["elevation_m"] if value is not None))
+        self.assertEqual(self.window._active_raster_path, path)
+        self.assertIs(self.window._point_query_tool, query_tool)
+        self.assertIs(self.window._rectangle_selection_tool, clip_tool)
+        self.assertEqual(self.window.map_canvas.layers(), layers)
+        self.window.profile_interval_spin.setValue(0.001)
+        self.window.regenerate_profile()
+        self.assertIs(self.window._profile_result, result)
+        self.assertIn("失败", self.window.statusBar().currentMessage())
+        self.window.profile_interval_spin.setValue(2)
+        self.window.regenerate_profile()
+        self.assertLess(self.window._profile_result["sample_count"], result["sample_count"])
+        self.window.show_layer(self.layer)
+        self.assertIsNone(self.window._profile_result)
+        self.assertFalse(self.window.regenerate_profile_action.isEnabled())
+        self.assertTrue(self.window._profile_dock.isHidden())
+
+    def test_profile_after_derived_displays_queries_original_dem(self):
+        self.window.show_layer(self.layer)
+        self.window._clip_selected_bounds({"west": 120, "south": 23, "east": 122, "north": 25})
+        path = self.window._active_raster_path
+        for action in (self.window.hillshade_action, self.window.slope_action,
+                       self.window.aspect_action, self.window.contour_action):
+            with self.subTest(action=action.text()):
+                action.trigger()
+                layers = self.window.map_canvas.layers()
+                self.window.create_profile([(120.5, 23.5), (121.5, 24)])
+                result = self.window._profile_result
+                self.assertIsNotNone(result)
+                self.assertEqual(result["raster_path"], str(Path(path).resolve()))
+                self.assertEqual(self.window.map_canvas.layers(), layers)
+                self.assertEqual(result["elevation_m"][0],
+                                 query_point_elevation(path, 120.5, 23.5)["elevation"])
+
     def test_point_query_is_enabled_after_show_layer(self):
         self.assertFalse(
             self.window.point_query_action.isEnabled()
@@ -166,6 +218,7 @@ class TestMainWindowPointQuery(unittest.TestCase):
                 "缩小",
                 "单点查询",
                 "矩形裁剪",
+                "剖面",
                 "取消任务",
             },
         )
@@ -178,7 +231,7 @@ class TestMainWindowPointQuery(unittest.TestCase):
         )
         self.assertIs(
             self.window.centralWidget(),
-            self.window.map_tabs,
+            self.window.map_splitter,
         )
         self.assertEqual(
             self.window.map_tabs.tabText(0),
