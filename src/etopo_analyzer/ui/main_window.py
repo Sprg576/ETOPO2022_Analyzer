@@ -110,6 +110,7 @@ from etopo_analyzer.ui.theme import LIGHT_THEME
 from etopo_analyzer.core.profile_analysis import sample_elevation_profile
 from etopo_analyzer.core.raster_statistics import DEFAULT_THRESHOLDS, validate_parameters, source_signature
 from etopo_analyzer.ui.statistics_worker import StatisticsWorker
+from etopo_analyzer.ui.comparison_controls import ComparisonControls
 from etopo_analyzer.ui.profile_selection_tool import ProfileSelectionMapTool, ProfileOverlay
 
 from etopo_analyzer.visualization.terrain_renderer import (
@@ -179,6 +180,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self.map_tabs = QTabWidget(self)
+        # 覆盖地图默认的较大高度建议，给底部分析图表留出真实可用空间。
+        self.map_tabs.setMinimumHeight(80)
         self.map_tabs.setObjectName("MapTabs")
         self.map_tabs.setDocumentMode(True)
         self.map_tabs.addTab(
@@ -198,6 +201,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._statistics_dock = None
         self._statistics_worker = None
         self._statistics_task_id = 0
+        self._comparison_controls = None
         self._closing = False
         self._profile_overlay = ProfileOverlay(self.map_canvas)
         self._profile_tool = ProfileSelectionMapTool(self.map_canvas)
@@ -626,6 +630,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         profile_menu.addAction(self.show_profile_action)
 
         statistics_menu = self.menuBar().addMenu("统计分析(&S)")
+        self._statistics_menu = statistics_menu
         self.statistics_action = QAction("计算区域统计", self)
         self.statistics_action.setEnabled(False)
         self.statistics_action.triggered.connect(self.create_statistics)
@@ -1253,6 +1258,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.statistics_bins_spin.valueChanged.connect(self._statistics_parameters_changed)
         self.statistics_thresholds_edit.textChanged.connect(self._statistics_parameters_changed)
         self._add_collapsible_section(layout, "区域统计", statistics_content)
+        self._comparison_controls = ComparisonControls(self)
+        self._comparison_header = self._add_collapsible_section(layout, "区域对比", self._comparison_controls)
+        self._statistics_menu.addSeparator()
+        self.configure_comparison_action = QAction("选择对比区域…", self)
+        self.configure_comparison_action.triggered.connect(self._show_comparison_controls)
+        self._statistics_menu.addAction(self.configure_comparison_action)
+        for action in (self._comparison_controls.start_action, self._comparison_controls.cancel_action,
+                       self._comparison_controls.show_action):
+            self._statistics_menu.addAction(action)
         layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -1269,7 +1283,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         title: str,
         content: QWidget,
         expanded: bool = True,
-    ) -> None:
+    ) -> QToolButton:
         """向分析面板加入可折叠分段。"""
 
         header = QToolButton(self)
@@ -1293,6 +1307,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         content.setVisible(expanded)
         parent_layout.addWidget(header)
         parent_layout.addWidget(content)
+        return header
+
+    def _show_comparison_controls(self):
+        self.analysis_dock.show()
+        self._comparison_header.setChecked(True)
+        self._analysis_scroll.ensureWidgetVisible(self._comparison_controls)
 
     @staticmethod
     def _toggle_section(
@@ -1497,6 +1517,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._layer_items[layer.id()] = layer_item
         self._managed_layers[layer.id()] = layer
         group_item.setExpanded(True)
+        if self._comparison_controls is not None:
+            self._comparison_controls.refresh_sources()
 
         return layer_item
 
@@ -2229,6 +2251,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
     def show_profile(self) -> None:
         if self._profile_dock is not None:
+            self._comparison_controls.hide_result()
             if self._statistics_dock is not None:
                 self._statistics_dock.hide()
             self._profile_dock.show()
@@ -2279,7 +2302,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.statistics_message.setText(message)
 
     def create_statistics(self):
-        if self._active_raster_path is None or self._statistics_worker is not None:
+        if (self._active_raster_path is None or self._statistics_worker is not None
+                or self._comparison_controls.worker is not None or self._closing):
             return
         self._invalidate_statistics("正在准备统计……")
         try:
@@ -2292,6 +2316,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         worker = StatisticsWorker(self._statistics_task_id, self._active_raster_path,
                                   self.statistics_bins_spin.value(), thresholds, self)
         self._statistics_worker = worker
+        self._comparison_controls.update_actions()
         worker.succeeded.connect(self._statistics_succeeded)
         worker.failed.connect(self._statistics_failed)
         worker.cancelled.connect(self._statistics_cancelled)
@@ -2367,6 +2392,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.cancel_statistics_action.setEnabled(False)
         self.statistics_progress.hide()
         self.statistics_action.setEnabled(self._active_raster_path is not None and not self._closing)
+        self._comparison_controls.update_actions()
         if self.statistics_message.text().startswith("已请求取消"):
             self.statistics_message.setText("统计已取消。")
         if self._closing:
@@ -2375,6 +2401,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
     def show_statistics(self):
         if self._statistics_result is None or self._statistics_dock is None:
             return
+        self._comparison_controls.hide_result()
         if self._profile_dock is not None:
             self._profile_dock.hide()
         self._statistics_dock.show()
@@ -2391,6 +2418,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         ])
 
     def closeEvent(self, event):
+        if self._comparison_controls.worker is not None:
+            self._closing = True
+            self._comparison_controls.cancel()
+            event.ignore()
+            return
         if self._statistics_worker is not None:
             self._closing = True
             self.cancel_statistics()
@@ -2425,6 +2457,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.profile_action.setEnabled(True)
         self._active_raster_path = layer.source()
         self._active_raster_layer = layer
+        self._comparison_controls.update_actions()
         self._update_analysis_source_action()
         # 加粗标出活动分析 DEM，显隐勾选仍只控制地图显示。
         self.layer_tree.blockSignals(True)

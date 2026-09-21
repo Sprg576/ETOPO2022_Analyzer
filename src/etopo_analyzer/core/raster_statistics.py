@@ -54,6 +54,36 @@ def _metre_unit(dataset, band):
 
 def calculate_raster_statistics(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
                                 *, block_size=512, progress=None, cancelled=None):
+    """保持 F09 接口；两遍扫描使用本区域的自动箱界。"""
+    scan = _statistics_scan(raster_path, bin_count, thresholds, block_size=block_size,
+                            progress=progress, cancelled=cancelled)
+    try:
+        next(scan)
+        return _finish_statistics_scan(scan)
+    finally:
+        scan.close()
+
+
+def histogram_edges(minimum, maximum, bin_count):
+    """生成公共或单区域箱界，常量区域使用一箱。"""
+    edges = (np.array([minimum - 0.5, maximum + 0.5]) if minimum == maximum
+             else np.linspace(minimum, maximum, bin_count + 1))
+    if not np.all(np.isfinite(edges)) or not np.all(np.diff(edges) > 0):
+        raise ValueError("直方图边界精度不足，请减少箱数或检查高程范围。")
+    return edges
+
+
+def _finish_statistics_scan(scan, edges=None):
+    """向暂停的扫描传入箱界，取回第二遍完成后的完整结果。"""
+    try:
+        scan.send(edges)
+    except StopIteration as finished:
+        return finished.value
+    raise RuntimeError("统计扫描未正确结束。")
+
+
+def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
+                     *, block_size=512, progress=None, cancelled=None):
     """像元等权统计和椭球面积分级；回调不依赖 Qt。"""
     thresholds = validate_parameters(bin_count, thresholds)
     if isinstance(block_size, bool) or not isinstance(block_size, int) or not 1 <= block_size <= 512:
@@ -157,10 +187,13 @@ def calculate_raster_statistics(raster_path, bin_count=50, thresholds=DEFAULT_TH
                     raise ValueError("DEM 全部为 NoData 或无效值，无法统计。")
                 if not all(math.isfinite(v) for v in (mean, m2)):
                     raise ValueError("高程数值过大，无法可靠计算统计量。")
-                edges = (np.array([minimum - 0.5, maximum + 0.5]) if minimum == maximum
-                         else np.linspace(minimum, maximum, bin_count + 1))
-                if not np.all(np.isfinite(edges)) or not np.all(np.diff(edges) > 0):
-                    raise ValueError("直方图边界精度不足，请减少箱数或检查高程范围。")
+                # 第一遍结束后只交出极值；F10 用双方极值生成同一组箱界。
+                supplied_edges = yield minimum, maximum
+                edges = (histogram_edges(minimum, maximum, bin_count) if supplied_edges is None
+                         else np.asarray(supplied_edges, dtype=np.float64))
+                if (edges.ndim != 1 or len(edges) < 2 or not np.all(np.isfinite(edges))
+                        or not np.all(np.diff(edges) > 0) or edges[0] > minimum or edges[-1] < maximum):
+                    raise ValueError("公共直方图箱界无效或未覆盖全部高程。")
                 histogram = np.zeros(len(edges) - 1, dtype=np.int64)
         check_cancel()
         if source_signature(path) != signature:
