@@ -16,15 +16,19 @@ def create_profile_figure(profile_result) -> Figure:
     ], dtype=float)
     if len(distances) != len(elevations) or not len(distances):
         raise ValueError("剖面距离与高程数组长度不一致或为空。")
-    font = FontProperties(family=["Microsoft YaHei", "SimHei", "DejaVu Sans"], size=9)
+    # 与高程直方图统一标题、轴标签和刻度的阅读尺度。
+    font = FontProperties(family=["Microsoft YaHei", "SimHei", "DejaVu Sans"], size=14)
+    title_font = font.copy()
+    title_font.set_size(16)
     figure = Figure(figsize=(8, 2.8), dpi=100, layout="constrained")
     axes = figure.add_subplot(111)
     axes.plot(distances, elevations, color="#294A7C", linewidth=1.2,
               marker=".", markersize=2)
     axes.axhline(0, color="#8994A3", linewidth=0.8, linestyle="--")
-    axes.set_xlabel("距离（km）", fontproperties=font)
-    axes.set_ylabel("高程（m）", fontproperties=font)
-    axes.set_title("地形 / 海底剖面", fontproperties=font)
+    axes.set_xlabel("距离（km）", fontproperties=font, labelpad=8)
+    axes.set_ylabel("高程（m）", fontproperties=font, labelpad=8)
+    axes.set_title("地形 / 海底剖面", fontproperties=title_font, pad=10)
+    axes.tick_params(axis="both", labelsize=12)
     axes.grid(True, color="#E4E7EC", linewidth=0.6)
     axes.set_xlim(0, max(float(distances[-1]), 1e-9))
     # A/B 标明沿线方向，即使端点缺测也保留标记。

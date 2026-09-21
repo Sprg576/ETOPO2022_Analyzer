@@ -124,6 +124,47 @@ class TestMainWindowPointQuery(unittest.TestCase):
         self.layer = None
         QgsProject.instance().clear()
 
+    def test_switch_back_to_source_allows_disjoint_clip(self):
+        self.window.show_layer(self.layer)
+        source_item = self.window._layer_items[self.layer.id()]
+        self.window._clip_selected_bounds(dict(west=120, south=23, east=120.2, north=23.2))
+        first_clip = self.window._active_raster_layer
+        first_item = self.window._layer_items[first_clip.id()]
+        self.window.create_profile([(120.05, 23.1), (120.15, 23.1)])
+        self.assertIsNotNone(self.window._profile_result)
+        self.window._statistics_result = {"old_source": True}
+        old_task_id = self.window._statistics_task_id
+        self.window.layer_tree.setCurrentItem(source_item)
+        self.assertTrue(self.window.set_analysis_source_action.isEnabled())
+        self.window.set_analysis_source_action.trigger()
+        self.assertIs(self.window._active_raster_layer, self.layer)
+        self.assertEqual(self.window._active_raster_path, str(RASTER_PATH))
+        self.assertIsNone(self.window._profile_result)
+        self.assertIsNone(self.window._statistics_result)
+        self.assertGreater(self.window._statistics_task_id, old_task_id)
+        self.assertTrue(source_item.font(0).bold())
+        self.assertFalse(first_item.font(0).bold())
+        self.assertFalse(self.window.set_analysis_source_action.isEnabled())
+        self.assertEqual(self.window._layer_groups["源数据"].childCount(), 1)
+        self.window._clip_selected_bounds(dict(west=121, south=24, east=121.2, north=24.2))
+        second_clip = self.window._active_raster_layer
+        self.assertIsNot(second_clip, first_clip)
+        self.assertGreater(second_clip.extent().xMinimum(), first_clip.extent().xMaximum())
+        self.assertEqual(self.window._layer_groups["裁剪结果"].childCount(), 2)
+        self.window.layer_tree.setCurrentItem(first_item)
+        self.window.set_analysis_source_action.trigger()
+        self.assertIs(self.window._active_raster_layer, first_clip)
+
+    def test_analysis_source_action_rejects_derived_and_groups(self):
+        self.window.show_layer(self.layer)
+        derived = create_raster_layer(str(RASTER_PATH), "派生显示测试")
+        item = self.window._register_layer(derived, "派生栅格")
+        for selected in (item, self.window._layer_groups["源数据"]):
+            self.window.layer_tree.setCurrentItem(selected)
+            self.assertFalse(self.window.set_analysis_source_action.isEnabled())
+            self.window.set_selected_analysis_source()
+            self.assertIs(self.window._active_raster_layer, self.layer)
+
     def test_profile_action_and_cancel(self):
         self.assertFalse(self.window.profile_action.isEnabled())
         self.window.show_layer(self.layer)

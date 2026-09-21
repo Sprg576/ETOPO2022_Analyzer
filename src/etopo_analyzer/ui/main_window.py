@@ -41,9 +41,13 @@ from qgis.PyQt.QtWidgets import (
     QFrame,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QScrollArea,
+    QSpinBox,
+    QProgressBar,
     QSizePolicy,
     QSplitter,
     QTableWidget,
@@ -104,6 +108,8 @@ from etopo_analyzer.ui.rectangle_selection_tool import (
 
 from etopo_analyzer.ui.theme import LIGHT_THEME
 from etopo_analyzer.core.profile_analysis import sample_elevation_profile
+from etopo_analyzer.core.raster_statistics import DEFAULT_THRESHOLDS, validate_parameters, source_signature
+from etopo_analyzer.ui.statistics_worker import StatisticsWorker
 from etopo_analyzer.ui.profile_selection_tool import ProfileSelectionMapTool, ProfileOverlay
 
 from etopo_analyzer.visualization.terrain_renderer import (
@@ -187,6 +193,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._profile_result = None
         self._profile_panel = None
         self._profile_dock = None
+        self._statistics_result = None
+        self._statistics_panel = None
+        self._statistics_dock = None
+        self._statistics_worker = None
+        self._statistics_task_id = 0
+        self._closing = False
         self._profile_overlay = ProfileOverlay(self.map_canvas)
         self._profile_tool = ProfileSelectionMapTool(self.map_canvas)
         self._profile_tool.profile_selected.connect(self.create_profile)
@@ -613,10 +625,19 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         profile_menu.addAction(self.regenerate_profile_action)
         profile_menu.addAction(self.show_profile_action)
 
-        for title in (
-            "统计分析(&S)",
-            "导出(&E)",
-        ):
+        statistics_menu = self.menuBar().addMenu("统计分析(&S)")
+        self.statistics_action = QAction("计算区域统计", self)
+        self.statistics_action.setEnabled(False)
+        self.statistics_action.triggered.connect(self.create_statistics)
+        self.cancel_statistics_action = QAction("取消统计", self)
+        self.cancel_statistics_action.setEnabled(False)
+        self.cancel_statistics_action.triggered.connect(self.cancel_statistics)
+        self.show_statistics_action = QAction("显示统计结果", self)
+        self.show_statistics_action.setEnabled(False)
+        self.show_statistics_action.triggered.connect(self.show_statistics)
+        for action in (self.statistics_action, self.cancel_statistics_action, self.show_statistics_action):
+            statistics_menu.addAction(action)
+        for title in ("导出(&E)",):
             menu = self.menuBar().addMenu(title)
             placeholder = QAction(
                 "将在后续功能阶段提供",
@@ -668,6 +689,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "LayerTree"
         )
         self.layer_tree.setHeaderHidden(True)
+        self.set_analysis_source_action = QAction("设为分析数据源", self)
+        self.set_analysis_source_action.setEnabled(False)
+        self.set_analysis_source_action.triggered.connect(self.set_selected_analysis_source)
+        self.layer_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.layer_tree.customContextMenuRequested.connect(self._show_layer_context_menu)
+        self.layer_tree.currentItemChanged.connect(self._update_analysis_source_action)
         self.layer_tree.setRootIsDecorated(True)
         self.layer_tree.setUniformRowHeights(True)
         self.layer_tree.setIndentation(16)
@@ -686,10 +713,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         tree_layout.addWidget(self.layer_tree)
 
         hint = QLabel(
-            "勾选控制地图可见性",
+            "勾选控制显示；右键 DEM 可切换分析源",
             tree_panel,
         )
         hint.setObjectName("LayerPanelHint")
+        hint.setWordWrap(True)
         hint.setContentsMargins(10, 2, 10, 0)
         tree_layout.addWidget(hint)
 
@@ -1191,6 +1219,40 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         profile_layout.addWidget(hint)
         self._add_collapsible_section(layout, "地形 / 海底剖面", profile_content)
+        statistics_content = QWidget(container)
+        self._statistics_controls = statistics_content
+        statistics_layout = QVBoxLayout(statistics_content)
+        statistics_layout.setContentsMargins(10, 8, 10, 10)
+        hint = QLabel("统计活动 DEM 全范围；局部区域请先裁剪。地图视野不影响范围。", statistics_content)
+        hint.setWordWrap(True)
+        hint.setObjectName("PanelHint")
+        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        statistics_layout.addWidget(hint)
+        form = QFormLayout()
+        self.statistics_bins_spin = QSpinBox(statistics_content)
+        self.statistics_bins_spin.setRange(1, 200)
+        self.statistics_bins_spin.setValue(50)
+        form.addRow("直方图箱数", self.statistics_bins_spin)
+        self.statistics_thresholds_edit = QLineEdit(", ".join(map(str, DEFAULT_THRESHOLDS)), statistics_content)
+        self.statistics_thresholds_edit.setMinimumWidth(0)
+        self.statistics_thresholds_edit.setToolTip("输入 1～50 个严格递增的米制高程阈值，以逗号分隔；自动覆盖两端。")
+        form.addRow("分级阈值（m）", self.statistics_thresholds_edit)
+        statistics_layout.addLayout(form)
+        reset = QAction("恢复默认参数", self)
+        reset.triggered.connect(self._reset_statistics_parameters)
+        for action in (reset, self.statistics_action, self.cancel_statistics_action, self.show_statistics_action):
+            statistics_layout.addWidget(self._panel_button(action))
+        self.statistics_progress = QProgressBar(statistics_content)
+        self.statistics_progress.setRange(0, 100)
+        self.statistics_progress.hide()
+        statistics_layout.addWidget(self.statistics_progress)
+        self.statistics_message = QLabel("尚未计算区域统计。", statistics_content)
+        self.statistics_message.setWordWrap(True)
+        self.statistics_message.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        statistics_layout.addWidget(self.statistics_message)
+        self.statistics_bins_spin.valueChanged.connect(self._statistics_parameters_changed)
+        self.statistics_thresholds_edit.textChanged.connect(self._statistics_parameters_changed)
+        self._add_collapsible_section(layout, "区域统计", statistics_content)
         layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -1349,6 +1411,45 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "ETOPO2022 全球地形与海底地形综合分析系统\n"
             "基于 QGIS 3.44 LTR、PyQGIS 与 GDAL。",
         )
+
+    def _selected_analysis_source(self):
+        """只允许源数据与裁剪 DEM，派生显示层不能成为分析源。"""
+        item = self.layer_tree.currentItem()
+        if item is None or item.parent() not in (
+            self._layer_groups.get("源数据"), self._layer_groups.get("裁剪结果"),
+        ):
+            return None
+        layer = self._managed_layers.get(item.data(0, Qt.UserRole))
+        if not isinstance(layer, QgsRasterLayer) or not layer.isValid():
+            return None
+        return layer
+
+    def _update_analysis_source_action(self, *args):
+        layer = self._selected_analysis_source()
+        self.set_analysis_source_action.setEnabled(
+            layer is not None and layer is not self._active_raster_layer
+        )
+
+    def _show_layer_context_menu(self, position):
+        item = self.layer_tree.itemAt(position)
+        if item is None or item.data(0, Qt.UserRole) is None:
+            return
+        self.layer_tree.setCurrentItem(item)
+        self._update_analysis_source_action()
+        menu = QMenu(self.layer_tree)
+        menu.addAction(self.set_analysis_source_action)
+        menu.exec_(self.layer_tree.viewport().mapToGlobal(position))
+
+    def set_selected_analysis_source(self):
+        """复用正式加载流程清除旧结果，并显示所选 DEM 的完整范围。"""
+        layer = self._selected_analysis_source()
+        if layer is None or layer is self._active_raster_layer:
+            return
+        group = self.layer_tree.currentItem().parent().text(0)
+        self.show_layer(layer, layer_group=group)
+        self.map_canvas.activate_pan()
+        self.pan_action.setChecked(True)
+        self.statusBar().showMessage(f"分析源已切换：{layer.name()}，可在该 DEM 范围内重新裁剪。")
 
     def _register_layer(
         self,
@@ -2128,13 +2229,19 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
     def show_profile(self) -> None:
         if self._profile_dock is not None:
+            if self._statistics_dock is not None:
+                self._statistics_dock.hide()
             self._profile_dock.show()
             # 等布局完成后分配高度，避免首次显示时图表被压扁。
             QTimer.singleShot(0, self._resize_profile_panes)
 
     def _resize_profile_panes(self) -> None:
         height = max(self.map_splitter.height(), 400)
-        self.map_splitter.setSizes([int(height * 0.65), int(height * 0.35)])
+        self.map_splitter.setSizes([
+            int(height * (0.65 if i == 0 else 0.35))
+            if i == 0 or self.map_splitter.widget(i) is self._profile_dock else 0
+            for i in range(self.map_splitter.count())
+        ])
         self._analysis_scroll.ensureWidgetVisible(self._profile_controls)
 
     def _clear_profile(self) -> None:
@@ -2147,6 +2254,149 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         if self._profile_panel is not None:
             self._profile_panel.clear()
             self._profile_dock.hide()
+
+    def _reset_statistics_parameters(self):
+        self.statistics_bins_spin.setValue(50)
+        self.statistics_thresholds_edit.setText(", ".join(map(str, DEFAULT_THRESHOLDS)))
+
+    def _statistics_parameters_changed(self, *args):
+        self._invalidate_statistics("参数已修改，需重新计算。")
+
+    def _invalidate_statistics(self, message):
+        # 任务号同时代表来源/参数版本，旧线程晚到的信号不能发布结果。
+        self._statistics_task_id += 1
+        if self._statistics_worker is not None:
+            self._statistics_worker.requestInterruption()
+        self._statistics_result = None
+        self.show_statistics_action.setEnabled(False)
+        self.cancel_statistics_action.setEnabled(False)
+        if self._statistics_dock is not None:
+            self._statistics_dock.hide()
+        if self._statistics_panel is not None:
+            self._statistics_panel.clear()
+            self._statistics_panel.deleteLater()
+            self._statistics_panel = None
+        self.statistics_message.setText(message)
+
+    def create_statistics(self):
+        if self._active_raster_path is None or self._statistics_worker is not None:
+            return
+        self._invalidate_statistics("正在准备统计……")
+        try:
+            text = self.statistics_thresholds_edit.text().replace("，", ",")
+            thresholds = [float(part.strip()) for part in text.split(",")]
+            validate_parameters(self.statistics_bins_spin.value(), thresholds)
+        except (ValueError, TypeError) as exc:
+            self.statistics_message.setText(f"参数无效：{exc}")
+            return
+        worker = StatisticsWorker(self._statistics_task_id, self._active_raster_path,
+                                  self.statistics_bins_spin.value(), thresholds, self)
+        self._statistics_worker = worker
+        worker.succeeded.connect(self._statistics_succeeded)
+        worker.failed.connect(self._statistics_failed)
+        worker.cancelled.connect(self._statistics_cancelled)
+        worker.progress.connect(self._statistics_progress_changed)
+        worker.finished.connect(self._statistics_finished)
+        self.statistics_action.setEnabled(False)
+        self.cancel_statistics_action.setEnabled(True)
+        self.statistics_progress.setValue(0)
+        self.statistics_progress.show()
+        self._analysis_scroll.ensureWidgetVisible(self._statistics_controls)
+        worker.start()
+
+    def cancel_statistics(self):
+        if self._statistics_worker is not None:
+            self._invalidate_statistics("已请求取消，等待当前分块读取结束。")
+
+    def _statistics_progress_changed(self, task_id, percent, phase):
+        if task_id == self._statistics_task_id and not self._closing:
+            self.statistics_progress.setValue(percent)
+            self.statistics_message.setText(f"{phase}：{percent}%")
+
+    def _statistics_failed(self, task_id, message):
+        if task_id == self._statistics_task_id and not self._closing:
+            self._invalidate_statistics(f"统计失败：{message}")
+
+    def _statistics_cancelled(self, task_id):
+        if task_id == self._statistics_task_id and not self._closing:
+            self._invalidate_statistics("统计已取消。")
+
+    def _statistics_succeeded(self, task_id, result):
+        if task_id != self._statistics_task_id or self._closing:
+            return
+        panel = None
+        try:
+            if str(Path(self._active_raster_path).resolve()) != result["raster_path"]:
+                raise RuntimeError("分析源已变化，请重新计算。")
+            if source_signature(result["raster_path"]) != (result["source"]["size_bytes"], result["source"]["mtime_ns"]):
+                raise RuntimeError("源 DEM 已变化，请重新计算。")
+            from etopo_analyzer.ui.statistics_panel import StatisticsPanel
+            panel = StatisticsPanel(result, self)
+            # 在发布结果前完成绘图，失败时不显示半成品。
+            panel.canvas.draw()
+            if self._statistics_dock is None:
+                self._statistics_dock = QDockWidget("区域统计", self)
+                self._statistics_dock.setObjectName("StatisticsDock")
+                self._statistics_dock.setMinimumHeight(340)
+                self._statistics_dock.setFeatures(QDockWidget.DockWidgetClosable)
+                self.map_splitter.addWidget(self._statistics_dock)
+            self._statistics_dock.setWidget(panel)
+        except Exception as exc:
+            if panel is not None:
+                panel.clear()
+                panel.deleteLater()
+            self._statistics_failed(task_id, str(exc))
+            return
+        self._statistics_panel = panel
+        self._statistics_result = result
+        self.show_statistics_action.setEnabled(True)
+        self.statistics_message.setText(
+            f"完成：有效像元 {result['statistics']['valid_count']:,}；"
+            f"有效面积 {result['area']['valid_m2'] / 1e6:,.3f} km²。"
+        )
+        self.show_statistics()
+
+    def _statistics_finished(self):
+        worker = self.sender()
+        if worker is not self._statistics_worker:
+            return
+        # finished 信号早于线程局部资源析构完成，等待 GDAL 句柄彻底释放。
+        worker.wait()
+        self._statistics_worker = None
+        worker.deleteLater()
+        self.cancel_statistics_action.setEnabled(False)
+        self.statistics_progress.hide()
+        self.statistics_action.setEnabled(self._active_raster_path is not None and not self._closing)
+        if self.statistics_message.text().startswith("已请求取消"):
+            self.statistics_message.setText("统计已取消。")
+        if self._closing:
+            QTimer.singleShot(0, self.close)
+
+    def show_statistics(self):
+        if self._statistics_result is None or self._statistics_dock is None:
+            return
+        if self._profile_dock is not None:
+            self._profile_dock.hide()
+        self._statistics_dock.show()
+        QTimer.singleShot(0, self._resize_statistics_panes)
+
+    def _resize_statistics_panes(self):
+        if self._statistics_result is None:
+            return
+        height = max(self.map_splitter.height(), 500)
+        self.map_splitter.setSizes([
+            int(height * (0.60 if i == 0 else 0.40))
+            if i == 0 or self.map_splitter.widget(i) is self._statistics_dock else 0
+            for i in range(self.map_splitter.count())
+        ])
+
+    def closeEvent(self, event):
+        if self._statistics_worker is not None:
+            self._closing = True
+            self.cancel_statistics()
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def show_layer(
         self,
@@ -2169,10 +2419,25 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.layer_tree.setCurrentItem(layer_item)
 
         # 只有正式加载或裁剪结果才能更新活动分析数据。
+        self._invalidate_statistics("分析源已更新，请重新计算统计。")
+        self.statistics_action.setEnabled(self._statistics_worker is None)
         self._clear_profile()
         self.profile_action.setEnabled(True)
         self._active_raster_path = layer.source()
         self._active_raster_layer = layer
+        self._update_analysis_source_action()
+        # 加粗标出活动分析 DEM，显隐勾选仍只控制地图显示。
+        self.layer_tree.blockSignals(True)
+        try:
+            for layer_id, item in self._layer_items.items():
+                active = layer_id == layer.id()
+                font = item.font(0)
+                font.setBold(active)
+                item.setFont(0, font)
+                source = self._managed_layers[layer_id].source()
+                item.setToolTip(0, source + ("\n当前分析数据源" if active else ""))
+        finally:
+            self.layer_tree.blockSignals(False)
         self._display_raster_layer = layer
         self._hillshade_layer = None
         self._slope_layer = None
