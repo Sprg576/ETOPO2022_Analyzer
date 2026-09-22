@@ -94,6 +94,8 @@ class TaskControls(QObject):
         w._comparison_controls.start_action.setEnabled(not busy and not w._closing and w._comparison_controls.selected_layers() is not None)
         w._update_analysis_source_action()
         w._update_style_action()
+        if hasattr(w, "clip_controls"):
+            w.clip_controls.set_busy(busy)
         if self.worker is not None and self.inputs is None:
             widgets = w._analysis_scroll.findChildren((QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox))
             self.inputs = [(widget, widget.isEnabled()) for widget in widgets]
@@ -104,12 +106,14 @@ class TaskControls(QObject):
                 widget.setEnabled(enabled)
             self.inputs = None
 
-    def start(self, name, stages, paths, publish):
+    def start(self, name, stages, paths, publish, source_layer=None):
         w = self.window
         if self.busy() or w._closing or not w._active_raster_path:
             w.statusBar().showMessage("请等待当前任务结束后再开始新的分析。")
             return
-        source, source_layer = w._active_raster_path, w._active_raster_layer
+        active_path, active_layer = w._active_raster_path, w._active_raster_layer
+        source_layer = source_layer or active_layer
+        source = source_layer.source()
         source_id = source_layer.id()
         worker = ProcessingWorker(stages, source, paths, w)
         self.worker = worker
@@ -118,8 +122,8 @@ class TaskControls(QObject):
         def finished():
             worker.wait()
             try:
-                valid = (not w._closing and w._active_raster_path == source and
-                         w._active_raster_layer is not None and w._active_raster_layer.id() == source_id)
+                valid = (not w._closing and w._active_raster_path == active_path and
+                         w._active_raster_layer is active_layer and source_id in w._managed_layers)
                 if worker.error or worker.isInterruptionRequested() or not valid:
                     worker.cleanup()
                     message = worker.error or "任务已取消或分析源已变化，结果未加载。"

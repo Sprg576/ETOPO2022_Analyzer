@@ -253,6 +253,41 @@ def _calculate_bounds(
     )
 
 
+def _pixel_window(dataset, west, south, east, north):
+    bounds = _validate_bounds(west, south, east, north)
+    gt = dataset.GetGeoTransform(can_return_null=True)
+    if gt is None:
+        raise RuntimeError("源栅格缺少 GeoTransform，无法定位裁剪窗口。")
+    inverse = gdal.InvGeoTransform(gt)
+    if inverse is None:
+        raise RuntimeError("源栅格 GeoTransform 无法求逆。")
+    pixels = [gdal.ApplyGeoTransform(inverse, x, y)
+              for x, y in _bounds_to_source_coordinates(dataset, *bounds)]
+    xs = [_snap_pixel_coordinate(p[0]) for p in pixels]
+    ys = [_snap_pixel_coordinate(p[1]) for p in pixels]
+    x, y = max(0, math.floor(min(xs))), max(0, math.floor(min(ys)))
+    width = min(dataset.RasterXSize, math.ceil(max(xs))) - x
+    height = min(dataset.RasterYSize, math.ceil(max(ys))) - y
+    if width <= 0 or height <= 0:
+        raise ValueError("裁剪范围与源栅格没有有效交集。")
+    return x, y, width, height
+
+
+def preview_clip(input_path, west, south, east, north, subdataset_name=None):
+    """仅读取栅格元数据，按实际裁剪规则预估像元窗口。"""
+    dataset = _open_source_dataset(Path(input_path), subdataset_name)
+    try:
+        x, y, width, height = _pixel_window(dataset, west, south, east, north)
+        gt = dataset.GetGeoTransform()
+        origin = gdal.ApplyGeoTransform(gt, x, y)
+        aligned = (origin[0], gt[1], gt[2], origin[1], gt[4], gt[5])
+        return {"source_window": (x, y, width, height), "width": width, "height": height,
+                "bounds": _calculate_bounds(aligned, width, height),
+                "crs": dataset.GetProjection()}
+    finally:
+        dataset = None
+
+
 def clip_raster_by_bounds(
     input_path: str,
     output_path: str,
@@ -315,79 +350,7 @@ def clip_raster_by_bounds(
     output_dataset = None
 
     try:
-        geotransform = dataset.GetGeoTransform(
-            can_return_null=True
-        )
-
-        if geotransform is None:
-            raise RuntimeError(
-                "源栅格缺少 GeoTransform，无法定位裁剪窗口。"
-            )
-
-        inverse_geotransform = (
-            gdal.InvGeoTransform(geotransform)
-        )
-
-        if inverse_geotransform is None:
-            raise RuntimeError(
-                "源栅格 GeoTransform 无法求逆。"
-            )
-
-        source_corners = _bounds_to_source_coordinates(
-            dataset,
-            west,
-            south,
-            east,
-            north,
-        )
-
-        pixel_corners = [
-            gdal.ApplyGeoTransform(
-                inverse_geotransform,
-                x,
-                y,
-            )
-            for x, y in source_corners
-        ]
-
-        pixel_xs = [
-            _snap_pixel_coordinate(point[0])
-            for point in pixel_corners
-        ]
-
-        pixel_ys = [
-            _snap_pixel_coordinate(point[1])
-            for point in pixel_corners
-        ]
-
-        # 起点向外取整、终点向外扩展，并限制在源栅格范围内。
-        column_start = max(
-            0,
-            math.floor(min(pixel_xs)),
-        )
-
-        column_end = min(
-            dataset.RasterXSize,
-            math.ceil(max(pixel_xs)),
-        )
-
-        row_start = max(
-            0,
-            math.floor(min(pixel_ys)),
-        )
-
-        row_end = min(
-            dataset.RasterYSize,
-            math.ceil(max(pixel_ys)),
-        )
-
-        width = column_end - column_start
-        height = row_end - row_start
-
-        if width <= 0 or height <= 0:
-            raise ValueError(
-                "裁剪范围与源栅格没有有效交集。"
-            )
+        column_start, row_start, width, height = _pixel_window(dataset, west, south, east, north)
 
         destination_path.parent.mkdir(
             parents=True,

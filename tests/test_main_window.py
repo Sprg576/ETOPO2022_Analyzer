@@ -487,7 +487,7 @@ class TestMainWindowPointQuery(unittest.TestCase):
             "矩形裁剪：请按住左键拖拽选择范围。",
         )
 
-    def test_real_rectangle_clip_is_auto_loaded(self):
+    def test_real_rectangle_clip_is_loaded_after_confirmation(self):
         self.window.show_layer(
             self.layer
         )
@@ -515,6 +515,10 @@ class TestMainWindowPointQuery(unittest.TestCase):
                 QgsPointXY(121.0, 31.0)
             )
         )
+
+        self.assertIs(self.window._active_raster_layer, self.layer)
+        self.assertEqual(self.window.clip_controls.bounds()["west"], 120.0)
+        self.window.clip_controls.start_button.click()
 
         canvas_layers = self.window.map_canvas.layers()
 

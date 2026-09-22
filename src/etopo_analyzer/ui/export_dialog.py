@@ -3,8 +3,9 @@
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from qgis.PyQt.QtCore import Qt, QUrl
-from qgis.PyQt.QtGui import QDesktopServices
+from qgis.PyQt.QtGui import QDesktopServices, QPixmap
 from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit,
     QSpinBox, QCheckBox, QLabel, QPushButton, QFileDialog, QProgressBar, QHBoxLayout, QAction)
 from qgis.core import QgsRasterLayer
@@ -49,6 +50,7 @@ class ExportDialog(QDialog):
         super().__init__(window)
         self.window, self.mode = window, mode
         self.worker = None
+        self.preview_temp = None
         self.map_running = self.cancelled = False
         self.output = None
         self.setWindowTitle(TITLES[mode])
@@ -116,7 +118,16 @@ class ExportDialog(QDialog):
         layout.addWidget(self.message)
         self.progress = QProgressBar(self)
         layout.addWidget(self.progress)
+        self.preview_label = QLabel("点击预览，检查标题、图例和留白。", self)
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(600, 300)
+        self.preview_label.setVisible(mode in ("map", "chart"))
+        layout.addWidget(self.preview_label)
         buttons = QHBoxLayout()
+        self.preview_button = QPushButton("生成预览", self)
+        self.preview_button.setVisible(mode in ("map", "chart"))
+        self.preview_button.clicked.connect(self.preview)
+        buttons.addWidget(self.preview_button)
         self.start_button = QPushButton("开始导出", self)
         self.cancel_button = QPushButton("关闭", self)
         self.open_button = QPushButton("打开输出文件夹", self)
@@ -128,7 +139,75 @@ class ExportDialog(QDialog):
             buttons.addWidget(button)
         layout.addLayout(buttons)
         self.choice.currentIndexChanged.connect(self.update_source)
+        for widget in (self.choice, self.pixels, self.dpi):
+            signal = widget.currentIndexChanged if widget is self.choice else widget.valueChanged
+            signal.connect(self.invalidate_preview)
+        self.title.textChanged.connect(self.invalidate_preview)
+        self.include_profile.toggled.connect(self.invalidate_preview)
         self.update_source()
+
+    def invalidate_preview(self, *args):
+        self.preview_label.clear()
+        self.preview_label.setText("设置已变更，请重新生成预览。")
+
+    def preview(self):
+        if self.worker is not None or self.map_running:
+            return
+        self.cancelled = False
+        if self.mode == "chart":
+            try:
+                key = self.choice.currentData()
+                result = deepcopy(self.items[key])
+                sources = result_sources(result)
+                validate_sources(sources)
+                self.preview_temp = TemporaryDirectory(prefix="etopo-preview-")
+                self.worker = ExportWorker(self.preview_temp.name, "preview", "chart", key, result,
+                    sources, {}, self.pixels.value(), self.dpi.value(), self)
+                self.worker.progress.connect(self.progress.setValue)
+                self.worker.succeeded.connect(lambda folder: self.show_preview(Path(folder) / "chart.png"))
+                self.worker.failed.connect(self.message.setText)
+                self.worker.finished.connect(self.finished)
+                self.set_busy(True)
+                self.message.setText("正在生成分析图预览……")
+                self.worker.start()
+            except Exception as exc:
+                self.message.setText(f"预览未完成：{exc}")
+            return
+        self.map_running = True
+        self.set_busy(True)
+        self.message.setText("正在生成预览；预览使用与正式导出相同的尺寸和版式。")
+        try:
+            with TemporaryDirectory(prefix="etopo-preview-") as temporary:
+                folder = Path(temporary)
+                if self.mode == "map":
+                    from etopo_analyzer.visualization.map_export import export_map
+                    profile = deepcopy(self.window._profile_result) if self.include_profile.isChecked() else None
+                    if profile:
+                        validate_sources(result_sources(profile))
+                    export_map(folder, self.window.map_canvas, self.title.text(), self.pixels.value(),
+                               self.dpi.value(), profile, lambda: self.cancelled, self.progress.setValue)
+                    path = folder / "map.png"
+                else:
+                    return
+                self.show_preview(path)
+        except Exception as exc:
+            self.invalidate_preview()
+            self.message.setText(f"预览未完成：{exc}")
+        finally:
+            self.map_running = False
+            self.set_busy(False)
+
+    def show_preview(self, path):
+        if self.cancelled:
+            self.message.setText("预览已取消。")
+            return
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            self.message.setText("无法读取预览图片。")
+            return
+        self.preview_label.setPixmap(pixmap.scaled(600, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.message.setText("预览已生成（等比例缩小显示），未创建正式成果。")
+        self.progress.setValue(100)
 
     def browse(self):
         selected = QFileDialog.getExistingDirectory(self, "选择输出目录", self.directory.text())
@@ -158,6 +237,7 @@ class ExportDialog(QDialog):
         self.start_button.setEnabled(key is not None)
 
     def set_busy(self, busy):
+        self.preview_button.setEnabled(not busy)
         for widget in (self.choice, self.directory, self.browse_button, self.name, self.title, self.pixels, self.dpi, self.include_profile, self.start_button):
             widget.setEnabled(not busy)
         self.include_profile.setEnabled(not busy and self.window._profile_result is not None)
@@ -228,6 +308,9 @@ class ExportDialog(QDialog):
         self.worker.wait()
         self.worker.deleteLater()
         self.worker = None
+        if self.preview_temp is not None:
+            self.preview_temp.cleanup()
+            self.preview_temp = None
         self.set_busy(False)
 
     def reject(self):

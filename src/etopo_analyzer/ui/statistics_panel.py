@@ -2,10 +2,11 @@
 
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTabWidget, QTableWidget, QTableWidgetItem,
-    QAbstractItemView, QHeaderView,
+    QAbstractItemView, QHeaderView, QComboBox,
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from etopo_analyzer.visualization.statistics_plot import create_statistics_figure
+from .copy_table import CopyTable
 
 
 def interval_label(item):
@@ -18,7 +19,7 @@ def interval_label(item):
 
 
 def _table(headers, rows):
-    table = QTableWidget(len(rows), len(headers))
+    table = CopyTable(len(rows), len(headers))
     table.setHorizontalHeaderLabels(headers)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.verticalHeader().hide()
@@ -60,7 +61,26 @@ class StatisticsPanel(QWidget):
         self.tabs.addTab(self.summary_table, "基本统计")
         self.canvas = FigureCanvasQTAgg(create_statistics_figure(result))
         self.canvas.setMinimumSize(320, 220)
-        self.tabs.addTab(self.canvas, "高程直方图")
+        chart = QWidget(self)
+        chart_layout = QVBoxLayout(chart)
+        self.histogram_mode = QComboBox(chart)
+        self.histogram_mode.addItem("像元数", "count")
+        self.histogram_mode.addItem("像元占比（%）", "percent")
+        self.histogram_mode.setCurrentIndex(1 if result.get("histogram_mode") == "percent" else 0)
+        chart_layout.addWidget(self.histogram_mode)
+        chart_layout.addWidget(self.canvas)
+        def change_mode():
+            result["histogram_mode"] = self.histogram_mode.currentData()
+            figure = create_statistics_figure(result)
+            old = self.canvas
+            self.canvas = FigureCanvasQTAgg(figure)
+            self.canvas.setMinimumSize(320, 220)
+            chart_layout.replaceWidget(old, self.canvas)
+            old.figure.clear()
+            old.deleteLater()
+            self.canvas.draw_idle()
+        self.histogram_mode.currentIndexChanged.connect(change_mode)
+        self.tabs.addTab(chart, "高程直方图")
         class_rows = [(interval_label(c), f"{c['count']:,}", f"{c['pixel_fraction']:.4%}",
                        f"{c['area_m2'] / 1e6:.6f}", f"{c['area_fraction']:.4%}")
                       for c in result["classes"]]

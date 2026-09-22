@@ -42,6 +42,8 @@ class ComparisonControls(QWidget):
         self.thresholds.setToolTip("1～50 个严格递增的米制高程阈值，以逗号分隔。")
         form.addRow("公共箱数", self.bins)
         form.addRow("分级阈值（m）", self.thresholds)
+        from .threshold_presets import ThresholdPresets
+        form.addRow(ThresholdPresets(self.thresholds, self))
         layout.addLayout(form)
         self.source_summary = QLabel(self)
         self.source_summary.setWordWrap(True)
@@ -204,6 +206,8 @@ class ComparisonControls(QWidget):
         panel = None
         try:
             self._check_result_sources(result)
+            for key, layer in zip(("a", "b"), self.selected_layers()):
+                result["regions"][key]["name"] = layer.name()
             from etopo_analyzer.ui.comparison_panel import ComparisonPanel
             panel = ComparisonPanel(result, self.window)
             for canvas in panel.canvases:

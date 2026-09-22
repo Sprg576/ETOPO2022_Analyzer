@@ -9,6 +9,7 @@ from qgis.core import QgsCoordinateTransform, QgsProject
 
 def set_visible_layers(window, layers):
     # 显隐不改变当前地图坐标系或视野。
+    layers = window.layer_order_controls.ordered(layers)
     window.map_canvas.setLayers(layers)
     window.map_canvas.refresh()
     window._sync_layer_tree_visibility()
@@ -56,6 +57,8 @@ def rename_layer(window, layer, item):
         window.layer_tree.blockSignals(previous)
     window._update_layer_properties(item, None)
     window._comparison_controls.refresh_sources()
+    window.layer_order_controls.sync()
+    window.clip_controls.refresh_sources()
     window.statusBar().showMessage(f"图层已重命名为：{name}")
 
 
@@ -99,6 +102,7 @@ def remove_layer(window, layer, from_project=False):
     remaining = [value for value in window.map_canvas.layers() if value.id() != layer_id]
     item = window._layer_items.pop(layer_id)
     window._managed_layers.pop(layer_id)
+    window.layer_order_controls.sync()
     previous = window.layer_tree.blockSignals(True)
     try:
         item.parent().removeChild(item)
@@ -112,6 +116,7 @@ def remove_layer(window, layer, from_project=False):
     window._update_style_action()
     window._update_layer_properties(window.layer_tree.currentItem(), None)
     window.statusBar().showMessage(f"已移除图层：{name}；磁盘文件保留。")
+    window.clip_controls.refresh_sources()
 
 
 def show_properties(window):

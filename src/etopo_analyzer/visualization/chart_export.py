@@ -15,6 +15,8 @@ def export_chart(folder, kind, result, pixels=2400, dpi=300):
         # 固定版面物理尺寸，DPI 只控制输出密度，避免 300 DPI 时标签挤满图面。
         width = 10
         height = 5 if kind == "area" else 4.5
+        if kind == "area" and len(result["classes"]) > 12:
+            height = max(5, len(result["classes"]) * .28 + 1.5)
         figure.set_size_inches(width, height)
         figure.savefig(str(folder / "chart.png"), dpi=pixels / width)
         # PNG 中记录用户选择的印刷 DPI，不改变实际像素尺寸。

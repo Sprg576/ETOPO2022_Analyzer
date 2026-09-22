@@ -2,13 +2,14 @@
 
 from pathlib import Path
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QWidget, QVBoxLayout, QLabel, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+from qgis.PyQt.QtWidgets import QWidget, QVBoxLayout, QLabel, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QScrollArea
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from etopo_analyzer.visualization.comparison_plot import create_distribution_figure, create_area_comparison_figure, class_label
+from .copy_table import CopyTable
 
 
 def _table(headers, rows):
-    table = QTableWidget(len(rows), len(headers))
+    table = CopyTable(len(rows), len(headers))
     table.setHorizontalHeaderLabels(headers)
     table.verticalHeader().hide()
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -64,7 +65,12 @@ class ComparisonPanel(QWidget):
                 for i, c in enumerate(result["classes"])]
         self.area_table = _table(["高程区间（m）", "A 面积（km²）", "B 面积（km²）", "A 面积占比", "B 面积占比", "B−A（百分点）"], rows)
         self.tabs.addTab(self.area_table, "分级面积表")
-        self.tabs.addTab(self.canvases[1], "分级面积占比图")
+        area_chart = QScrollArea(self)
+        area_chart.setWidgetResizable(True)
+        if len(result["classes"]) > 12:
+            self.canvases[1].setMinimumHeight(len(result["classes"]) * 28 + 150)
+        area_chart.setWidget(self.canvases[1])
+        self.tabs.addTab(area_chart, "分级面积占比图")
         hint = QLabel("分布使用有效像元占比；分级使用有效面积占比。两区分别归一化；负高程不等同于真实海洋。")
         hint.setWordWrap(True)
         layout.addWidget(hint)

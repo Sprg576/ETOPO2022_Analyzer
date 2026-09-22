@@ -240,15 +240,37 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._create_status_bar()
         from etopo_analyzer.ui.processing_tasks import TaskControls
         self._task_controls = TaskControls(self)
+        from etopo_analyzer.ui.clip_controls import ClipControls
+        self.clip_controls = ClipControls(self)
+        from etopo_analyzer.ui.panel_layout import make_panel_responsive
+        make_panel_responsive(self.analysis_dock)
+        make_panel_responsive(self.clip_controls)
+        make_panel_responsive(self.layer_dock)
+        self._side_width_timer = QTimer(self)
+        self._side_width_timer.setSingleShot(True)
+        self._side_width_timer.timeout.connect(self._resize_side_panels)
+        self._side_width_timer.start(0)
 
         self.resizeDocks(
             [
                 self.layer_dock,
                 self.analysis_dock,
             ],
-            [260, 300],
+            [round(self.width() * .18)] * 2,
             Qt.Horizontal,
         )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_side_width_timer"):
+            self._side_width_timer.start(0)
+
+    def _resize_side_panels(self):
+        width = round(self.width() * .18)
+        docks = [dock for dock in (self.layer_dock, self.analysis_dock)
+                 if not dock.isFloating() and dock.isVisible()]
+        if docks:
+            self.resizeDocks(docks, [width] * len(docks), Qt.Horizontal)
 
     @staticmethod
     def _icon(file_name: str) -> QIcon:
@@ -674,7 +696,6 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             | Qt.RightDockWidgetArea
         )
         self.layer_dock.setMinimumWidth(210)
-        self.layer_dock.setMaximumWidth(340)
 
         splitter = QSplitter(
             Qt.Vertical,
@@ -730,6 +751,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.layer_state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.layer_state_label.setContentsMargins(10, 2, 10, 0)
         tree_layout.addWidget(self.layer_state_label)
+        from etopo_analyzer.ui.layer_order import LayerOrderControls
+        self.layer_order_controls = LayerOrderControls(self)
+        tree_layout.addWidget(self.layer_order_controls)
         self.map_canvas.layersChanged.connect(self._update_style_action)
 
         for group_name in (
@@ -958,8 +982,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             Qt.LeftDockWidgetArea
             | Qt.RightDockWidgetArea
         )
-        self.analysis_dock.setMinimumWidth(280)
-        self.analysis_dock.setMaximumWidth(400)
+        self.analysis_dock.setMinimumWidth(220)
 
         scroll_area = QScrollArea(
             self.analysis_dock
@@ -970,7 +993,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAlwaysOff
+            Qt.ScrollBarAsNeeded
         )
 
         container = QWidget(scroll_area)
@@ -1248,6 +1271,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.statistics_thresholds_edit.setMinimumWidth(0)
         self.statistics_thresholds_edit.setToolTip("输入 1～50 个严格递增的米制高程阈值，以逗号分隔；自动覆盖两端。")
         form.addRow("分级阈值（m）", self.statistics_thresholds_edit)
+        from etopo_analyzer.ui.threshold_presets import ThresholdPresets
+        form.addRow(ThresholdPresets(self.statistics_thresholds_edit, statistics_content))
         statistics_layout.addLayout(form)
         reset = QAction("恢复默认参数", self)
         reset.triggered.connect(self._reset_statistics_parameters)
@@ -1552,9 +1577,13 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         self._layer_items[layer.id()] = layer_item
         self._managed_layers[layer.id()] = layer
+        self.layer_order_controls.sync()
         group_item.setExpanded(True)
         if self._comparison_controls is not None:
             self._comparison_controls.refresh_sources()
+
+        if hasattr(self, "clip_controls"):
+            self.clip_controls.refresh_sources()
 
         return layer_item
 
@@ -1730,6 +1759,10 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         if self._rectangle_selection_tool is None:
             return
 
+        self.clip_controls.refresh_sources()
+        self.clip_controls.show()
+        self.clip_controls.raise_()
+
         self.map_canvas.setMapTool(
             self._rectangle_selection_tool
         )
@@ -1753,6 +1786,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
     def _clip_selected_bounds(
         self,
         bounds: dict,
+        source_layer=None,
+        activate_result=True,
     ) -> None:
         """裁剪框选范围并自动加载结果图层。"""
 
@@ -1763,13 +1798,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             return
 
         output_path = self._next_clip_output_path()
-        source = self._active_raster_path
+        source_layer = source_layer or self._active_raster_layer
+        source = source_layer.source()
         bounds = dict(bounds)
         self._task_controls.start("裁剪", [("裁剪", lambda results: clip_raster_by_bounds(
             source, str(output_path), bounds["west"], bounds["south"], bounds["east"], bounds["north"]))],
-            [output_path], lambda results: self._publish_clip(output_path, bounds, results[0]))
+            [output_path], lambda results: self._publish_clip(output_path, bounds, results[0], source, activate_result),
+            source_layer=source_layer)
 
-    def _publish_clip(self, output_path, bounds, result):
+    def _publish_clip(self, output_path, bounds, result, source=None, activate_result=True):
 
         self.statusBar().showMessage(
             "正在裁剪，请稍候……"
@@ -1793,12 +1830,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             raise
 
         # 裁剪结果成为新的分析源，后续查询和分析都以它为准。
-        record_processing(output_layer, self._active_raster_path, "pixel_aligned_clip",
+        record_processing(output_layer, source or self._active_raster_path, "pixel_aligned_clip",
                           {"requested_bounds": bounds, **result})
-        self.show_layer(
-            output_layer,
-            layer_group="裁剪结果",
-        )
+        if activate_result:
+            self.show_layer(output_layer, layer_group="裁剪结果")
+        else:
+            item = self._register_layer(output_layer, "裁剪结果")
+            from etopo_analyzer.ui.layer_context_menu import set_visible_layers
+            set_visible_layers(self, [output_layer, *self.map_canvas.layers()])
+            self.layer_tree.setCurrentItem(item)
 
         self.map_canvas.activate_pan()
         self.pan_action.setChecked(True)
@@ -1826,9 +1866,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             return
 
         try:
+            opacity = layer.renderer().opacity()
             apply_etopo_color_relief(
                 layer
             )
+            layer.renderer().setOpacity(opacity)
         except (ValueError, RuntimeError) as exc:
             self.statusBar().showMessage(
                 f"分层设色失败：{exc}"
@@ -2256,6 +2298,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             figure = create_profile_figure(result)
             if self._profile_panel is None:
                 self._profile_panel = ProfilePanel(self)
+                self._profile_panel.sample_hovered.connect(self._profile_overlay.show_sample)
+                self._profile_panel.reverse_requested.connect(self._reverse_profile)
                 self._profile_dock = QDockWidget("地形 / 海底剖面", self)
                 self._profile_dock.setObjectName("ProfileDock")
                 self._profile_dock.setMinimumHeight(220)
@@ -2263,6 +2307,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
                 self._profile_dock.setWidget(self._profile_panel)
                 self.map_splitter.addWidget(self._profile_dock)
             self._profile_panel.set_figure(figure)
+            self._profile_panel.set_result(result)
         except (ValueError, RuntimeError, OSError, ImportError) as exc:
             self._show_profile_error(str(exc))
             return
@@ -2279,6 +2324,10 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
     def regenerate_profile(self) -> None:
         if self._profile_result is not None:
             self.create_profile(self._profile_result["vertices"])
+
+    def _reverse_profile(self):
+        if self._profile_result is not None and not self._task_controls.busy():
+            self.create_profile(list(reversed(self._profile_result["vertices"])))
 
     def show_profile(self) -> None:
         if self._profile_dock is not None:
@@ -2598,7 +2647,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self._rectangle_selection_tool.rectangle_selected.connect(
-            self._clip_selected_bounds
+            self.clip_controls.receive
         )
 
         self._rectangle_selection_tool.selection_failed.connect(

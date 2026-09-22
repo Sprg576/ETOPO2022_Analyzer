@@ -48,7 +48,7 @@ def result_metadata(result):
         return {"parameters": result["parameters"], "compatibility": result["compatibility"],
                 "regions": {k: result_metadata(v) for k, v in result["regions"].items()},
                 "warnings": result.get("warnings", []), "completed_at": result.get("completed_at")}
-    return {key: result[key] for key in ("raster_path", "source", "parameters", "completed_at",
+    return {key: result[key] for key in ("raster_path", "source", "parameters", "completed_at", "name", "histogram_mode",
             "vertices", "vertex_distance_m", "sample_interval_m", "total_distance_m",
             "sample_count", "warnings") if key in result}
 

@@ -17,6 +17,12 @@ class ProfileOverlay:
     def __init__(self, canvas):
         self.canvas = canvas
         self.vertices = []
+        self.sample_point = None
+        self.sample_marker = QgsVertexMarker(canvas)
+        self.sample_marker.setColor(QColor("#E63946"))
+        self.sample_marker.setIconSize(12)
+        self.sample_marker.setPenWidth(3)
+        self.sample_marker.hide()
         self.band = QgsRubberBand(canvas, Qgis.GeometryType.Line)
         self.band.setColor(QColor("#C94A38"))
         self.band.setWidth(2)
@@ -33,6 +39,7 @@ class ProfileOverlay:
         self.refresh()
 
     def refresh(self):
+        self.show_sample(self.sample_point)
         self.band.reset(Qgis.GeometryType.Line)
         for marker in self.markers:
             marker.hide()
@@ -54,7 +61,20 @@ class ProfileOverlay:
             self.band.reset(Qgis.GeometryType.Line)
 
     def clear(self):
+        self.show_sample(None)
         self.set_vertices([])
+
+    def show_sample(self, point):
+        self.sample_point = point
+        self.sample_marker.hide()
+        if point is not None:
+            try:
+                transform = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:4326"),
+                    self.canvas.mapSettings().destinationCrs(), QgsProject.instance())
+                self.sample_marker.setCenter(transform.transform(QgsPointXY(*point)))
+                self.sample_marker.show()
+            except (ValueError, RuntimeError, QgsCsException):
+                pass
 
 
 class ProfileSelectionMapTool(QgsMapTool):
