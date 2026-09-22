@@ -35,6 +35,8 @@ class TestComparisonUI(unittest.TestCase):
         create_dem(self.path_b, [[0, 2, 4]] * 3, transform=(121, .1, 0, 24, 0, -.1))
         self.a, self.b = [add_raster_layer(str(p)) for p in (self.path_a, self.path_b)]
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import wrap_processing_calls
+        wrap_processing_calls(self.window)
         self.window.map_canvas.freeze(True)
         self.window.show_layer(self.a)
         self.window.show_layer(self.b, layer_group="裁剪结果")
@@ -153,6 +155,19 @@ class TestComparisonUI(unittest.TestCase):
             self.start()
         self.assertIn("绘图失败", self.controls.message.text())
         self.assertIsNone(self.controls.result)
+
+    def test_recompute_failure_keeps_valid_comparison(self):
+        self.start()
+        previous, panel = self.controls.result, self.controls.panel
+        with patch("etopo_analyzer.ui.comparison_worker.compare_regions", side_effect=RuntimeError("失败")):
+            self.start()
+        self.assertIs(self.controls.result, previous)
+        self.assertIs(self.controls.panel, panel)
+        self.assertTrue(self.controls.show_action.isEnabled())
+        with patch("etopo_analyzer.ui.comparison_panel.create_distribution_figure", side_effect=RuntimeError("绘图失败")):
+            self.start()
+        self.assertIn("绘图失败", self.controls.message.text())
+        self.assertIs(self.controls.result, previous)
 
     def test_derived_layers_excluded_and_removal_invalidates(self):
         derived = add_raster_layer(str(self.path_a), "坡度显示")

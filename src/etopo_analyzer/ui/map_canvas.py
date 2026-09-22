@@ -104,7 +104,7 @@ class ETOPOMapCanvas(QgsMapCanvas):
         # 对 EPSG:9518 等复合 CRS，只使用其水平 CRS。
         layer_crs = reference_layer.crs()
 
-        if layer_crs.isValid():
+        if layer_crs.isValid() and zoom_to_layer:
             horizontal_crs = (
                 layer_crs.horizontalCrs()
             )

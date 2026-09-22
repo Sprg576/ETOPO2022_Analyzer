@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from etopo_analyzer.core import processing_feedback as feedback
 
 from osgeo import gdal
 from pyproj import CRS, Transformer
@@ -236,6 +237,7 @@ def project_raster_to_local_utm(
         output_dataset = gdal.Warp(
             str(destination_path),
             dataset,
+            callback=feedback.gdal_callback,
             **warp_options,
         )
 
@@ -327,6 +329,7 @@ def generate_hillshade(
     try:
         # zFactor=1 表示水平距离和高程都使用米。
         options = gdal.DEMProcessingOptions(
+            callback=feedback.gdal_callback,
             format="GTiff",
             computeEdges=True,
             azimuth=float(azimuth),

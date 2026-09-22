@@ -113,6 +113,9 @@ class TestMainWindowPointQuery(unittest.TestCase):
             str(RASTER_PATH)
         )
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import wrap_processing_calls
+        wrap_processing_calls(self.window)
+        self.window.map_canvas.freeze(True)
 
         self.window._clip_output_directory = (
             self.temp_path / self._testMethodName

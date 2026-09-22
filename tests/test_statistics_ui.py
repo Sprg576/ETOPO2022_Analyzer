@@ -34,6 +34,8 @@ class TestStatisticsUI(unittest.TestCase):
         self.layer = create_raster_layer(str(self.path))
         QgsProject.instance().addMapLayer(self.layer)
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import wrap_processing_calls
+        wrap_processing_calls(self.window)
         # 本组验证统计状态，暂停无关地图渲染，避免渲染线程延迟释放临时 DEM。
         self.window.map_canvas.freeze(True)
 
@@ -105,6 +107,20 @@ class TestStatisticsUI(unittest.TestCase):
         self.start()
         self.assertIsNone(self.window._statistics_result)
         self.assertIn("参数无效", self.window.statistics_message.text())
+
+    def test_recompute_failure_and_cancel_keep_last_valid_result(self):
+        self.window.show_layer(self.layer)
+        self.start()
+        previous, panel = self.window._statistics_result, self.window._statistics_panel
+        with patch("etopo_analyzer.ui.statistics_worker.calculate_raster_statistics", side_effect=RuntimeError("失败")):
+            self.start()
+        self.assertIs(self.window._statistics_result, previous)
+        self.assertIs(self.window._statistics_panel, panel)
+        self.window.create_statistics()
+        self.window.cancel_task_action.trigger()
+        self.wait_finished()
+        self.assertIs(self.window._statistics_result, previous)
+        self.assertTrue(self.window.show_statistics_action.isEnabled())
 
     def test_switch_source_and_stale_result_rejected(self):
         self.window.show_layer(self.layer)

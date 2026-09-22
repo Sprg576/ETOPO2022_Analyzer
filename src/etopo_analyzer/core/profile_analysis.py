@@ -3,6 +3,8 @@
 from bisect import bisect_right
 import math
 from pathlib import Path
+from datetime import datetime, timezone
+from etopo_analyzer.core import processing_feedback as feedback
 
 from pyproj import Geod
 
@@ -95,6 +97,8 @@ def sample_elevation_profile(
     if len(distances) > MAX_PROFILE_SAMPLES:
         raise ValueError("采样点超过上限，请增大采样间隔。")
 
+    from etopo_analyzer.core.export_service import file_signature, validate_sources
+    signature = file_signature(raster_path)
     result = {
         "raster_path": str(Path(raster_path).resolve()),
         "vertices": points, "vertex_distance_m": vertex_distances,
@@ -102,10 +106,17 @@ def sample_elevation_profile(
         "elevation_m": [], "depth_m": [], "is_nodata": [],
         "total_distance_m": total, "sample_count": len(distances),
         "sample_interval_m": interval,
+        "source": {k: signature[k] for k in ("size_bytes", "mtime_ns")},
+        "parameters": {"method": "wgs84_geodesic_nearest_pixel", "unit": "m"},
     }
     # 所有采样共用一次打开的数据集与坐标转换器。
     with RasterSampler(raster_path) as sampler:
-        for distance in distances:
+        result["source"].update(crs_wkt=sampler.dataset.GetProjection(),
+                                geotransform=list(sampler.dataset.GetGeoTransform()),
+                                width=sampler.dataset.RasterXSize, height=sampler.dataset.RasterYSize,
+                                scale=sampler.band.GetScale(), offset=sampler.band.GetOffset())
+        for index, distance in enumerate(distances):
+            feedback.report(index / len(distances))
             lon, lat = point_at_distance(points, vertex_distances, azimuths, distance)
             value = sampler.sample(lon, lat, outside_as_nodata=True)
             for target, source in (
@@ -117,4 +128,6 @@ def sample_elevation_profile(
     result["valid_sample_count"] = sum(not flag for flag in result["is_nodata"])
     if result["valid_sample_count"] == 0:
         raise ValueError("整条剖面没有有效高程，请在 DEM 覆盖范围内绘制。")
+    validate_sources([signature])
+    result["completed_at"] = datetime.now(timezone.utc).isoformat()
     return result

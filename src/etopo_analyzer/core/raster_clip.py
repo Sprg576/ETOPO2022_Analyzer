@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from etopo_analyzer.core import processing_feedback as feedback
 
 from osgeo import gdal
 from pyproj import CRS, Transformer
@@ -395,6 +396,7 @@ def clip_raster_by_bounds(
 
         # srcWin 让 GDAL 只复制目标像元窗口，不读取完整栅格。
         translate_options = gdal.TranslateOptions(
+            callback=feedback.gdal_callback,
             format="GTiff",
             srcWin=[
                 column_start,
@@ -454,6 +456,7 @@ def clip_raster_by_bounds(
             ),
         }
 
+        feedback.check()
         return result
     except Exception:
         output_dataset = None

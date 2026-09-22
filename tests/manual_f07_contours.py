@@ -74,6 +74,8 @@ def main() -> int:
             "F07 台湾及邻近海域 DEM",
         )
         window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import wrap_processing_calls
+        wrap_processing_calls(window)
         window.show_layer(layer)
         window.apply_color_relief()
         window.contour_interval_spin.setValue(500.0)

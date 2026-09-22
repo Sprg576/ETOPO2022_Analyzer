@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from etopo_analyzer.core import processing_feedback as feedback
 
 from osgeo import gdal
 
@@ -117,6 +118,7 @@ def generate_slope(
     try:
         # 水平和垂直单位均为米，因此固定 zFactor=1。
         options = gdal.DEMProcessingOptions(
+            callback=feedback.gdal_callback,
             format="GTiff",
             band=1,
             computeEdges=True,
@@ -188,6 +190,7 @@ def generate_aspect(
     try:
         # 使用方位角：北为 0°，顺时针增加；平地写入 NoData。
         options = gdal.DEMProcessingOptions(
+            callback=feedback.gdal_callback,
             format="GTiff",
             band=1,
             computeEdges=True,

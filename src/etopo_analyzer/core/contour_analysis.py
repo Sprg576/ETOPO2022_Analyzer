@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from etopo_analyzer.core import processing_feedback as feedback
 
 from osgeo import gdal, ogr
 
@@ -138,6 +139,7 @@ def _populate_contour_types(contour_layer) -> dict[str, int]:
         feature = contour_layer.GetNextFeature()
 
         while feature is not None:
+            feedback.check()
             if not feature.IsFieldSetAndNotNull("ELEV"):
                 raise RuntimeError(
                     "等值线要素缺少 ELEV 值。"
@@ -269,6 +271,7 @@ def generate_contours(
             source_band,
             contour_layer,
             options=options,
+            callback=feedback.gdal_callback,
         )
 
         if error_code != gdal.CE_None:

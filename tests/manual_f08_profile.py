@@ -23,6 +23,8 @@ def main():
                 str(preview), west=120, south=20, east=126, north=26,
             )
         window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import wrap_processing_calls
+        wrap_processing_calls(window)
         window.show_layer(add_raster_layer(str(preview), "F08 台湾及邻近海域 DEM"))
         window.apply_color_relief()
         window.create_profile([(120.8, 23.5), (123.5, 23.5)])

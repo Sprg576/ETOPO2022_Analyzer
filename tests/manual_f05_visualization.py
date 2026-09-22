@@ -83,6 +83,8 @@ def main() -> int:
             "ETOPO2022 60s Surface",
         )
         window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import wrap_processing_calls
+        wrap_processing_calls(window)
         window._clip_output_directory = Path(
             temp_directory.name
         )

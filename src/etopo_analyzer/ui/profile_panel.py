@@ -16,6 +16,11 @@ class ProfilePanel(QWidget):
     def set_figure(self, figure):
         canvas = FigureCanvasQTAgg(figure)
         canvas.setMinimumSize(320, 180)
+        try:
+            canvas.draw()
+        except Exception:
+            canvas.deleteLater()
+            raise
         if self.canvas is not None:
             self._layout.removeWidget(self.canvas)
             self.canvas.figure.clear()

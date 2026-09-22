@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from qgis.PyQt import sip
 
 from qgis.PyQt.QtCore import QSize, Qt, QTimer
 from qgis.PyQt.QtGui import QColor, QIcon
@@ -43,7 +44,6 @@ from qgis.PyQt.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QScrollArea,
     QSpinBox,
@@ -108,6 +108,7 @@ from etopo_analyzer.ui.rectangle_selection_tool import (
 
 from etopo_analyzer.ui.theme import LIGHT_THEME
 from etopo_analyzer.core.profile_analysis import sample_elevation_profile
+from etopo_analyzer.core.export_service import record_processing
 from etopo_analyzer.core.raster_statistics import DEFAULT_THRESHOLDS, validate_parameters, source_signature
 from etopo_analyzer.ui.statistics_worker import StatisticsWorker
 from etopo_analyzer.ui.comparison_controls import ComparisonControls
@@ -202,6 +203,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._statistics_worker = None
         self._statistics_task_id = 0
         self._comparison_controls = None
+        self._task_controls = None
         self._closing = False
         self._profile_overlay = ProfileOverlay(self.map_canvas)
         self._profile_tool = ProfileSelectionMapTool(self.map_canvas)
@@ -236,6 +238,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._create_layer_dock()
         self._create_analysis_dock()
         self._create_status_bar()
+        from etopo_analyzer.ui.processing_tasks import TaskControls
+        self._task_controls = TaskControls(self)
 
         self.resizeDocks(
             [
@@ -581,7 +585,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # 后台任务尚未实现，先保留不可用的取消入口。
+        # 由统一任务控制器按当前任务更新可用状态。
         self.cancel_task_action = QAction(
             self._icon("cancel.svg"),
             "取消任务",
@@ -589,7 +593,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
         self.cancel_task_action.setEnabled(False)
         self.cancel_task_action.setToolTip(
-            "后台任务功能将在后续阶段提供"
+            "取消当前计算任务"
         )
         toolbar.addAction(
             self.cancel_task_action
@@ -642,14 +646,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.show_statistics_action.triggered.connect(self.show_statistics)
         for action in (self.statistics_action, self.cancel_statistics_action, self.show_statistics_action):
             statistics_menu.addAction(action)
-        for title in ("导出(&E)",):
-            menu = self.menuBar().addMenu(title)
-            placeholder = QAction(
-                "将在后续功能阶段提供",
-                self,
-            )
-            placeholder.setEnabled(False)
-            menu.addAction(placeholder)
+        from etopo_analyzer.ui.export_dialog import install_export_menu
+        install_export_menu(self)
 
         help_menu = self.menuBar().addMenu("帮助(&H)")
         self.about_action = QAction(
@@ -700,6 +698,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.layer_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.layer_tree.customContextMenuRequested.connect(self._show_layer_context_menu)
         self.layer_tree.currentItemChanged.connect(self._update_analysis_source_action)
+        self.layer_tree.currentItemChanged.connect(self._update_style_action)
+        QgsProject.instance().layersWillBeRemoved.connect(self._project_layers_removing)
         self.layer_tree.setRootIsDecorated(True)
         self.layer_tree.setUniformRowHeights(True)
         self.layer_tree.setIndentation(16)
@@ -718,13 +718,19 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         tree_layout.addWidget(self.layer_tree)
 
         hint = QLabel(
-            "勾选控制显示；右键 DEM 可切换分析源",
+            "勾选控制显示；右键可缩放、重命名、移除或切换分析源",
             tree_panel,
         )
         hint.setObjectName("LayerPanelHint")
         hint.setWordWrap(True)
         hint.setContentsMargins(10, 2, 10, 0)
         tree_layout.addWidget(hint)
+        self.layer_state_label = QLabel(tree_panel)
+        self.layer_state_label.setWordWrap(True)
+        self.layer_state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.layer_state_label.setContentsMargins(10, 2, 10, 0)
+        tree_layout.addWidget(self.layer_state_label)
+        self.map_canvas.layersChanged.connect(self._update_style_action)
 
         for group_name in (
             "源数据",
@@ -1440,7 +1446,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         ):
             return None
         layer = self._managed_layers.get(item.data(0, Qt.UserRole))
-        if not isinstance(layer, QgsRasterLayer) or not layer.isValid():
+        if not isinstance(layer, QgsRasterLayer) or sip.isdeleted(layer) or not layer.isValid():
             return None
         return layer
 
@@ -1448,22 +1454,52 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         layer = self._selected_analysis_source()
         self.set_analysis_source_action.setEnabled(
             layer is not None and layer is not self._active_raster_layer
+            and not (self._task_controls and self._task_controls.busy())
         )
+
+    def _selected_style_layer(self):
+        item = self.layer_tree.currentItem()
+        if item is None or item.parent() not in (self._layer_groups.get("源数据"),
+                self._layer_groups.get("裁剪结果"), self._layer_groups.get("辅助数据")):
+            return None
+        layer = self._managed_layers.get(item.data(0, Qt.UserRole))
+        return layer if isinstance(layer, QgsRasterLayer) and not sip.isdeleted(layer) and layer.isValid() else None
+
+    def _project_layers_removing(self, layer_ids):
+        from etopo_analyzer.ui.layer_context_menu import remove_layer
+        for layer_id in layer_ids:
+            layer = self._managed_layers.get(layer_id)
+            if layer is not None and not sip.isdeleted(layer):
+                remove_layer(self, layer, from_project=True)
+
+    def _update_style_action(self, *args):
+        self.color_relief_action.setEnabled(self._selected_style_layer() is not None)
+        self.color_relief_action.setToolTip("为左侧选中的高程图层应用分层设色；不改变分析源")
+        if hasattr(self, "layer_state_label"):
+            item = self.layer_tree.currentItem()
+            selected = self._managed_layers.get(item.data(0, Qt.UserRole)) if item else None
+            selected_name = selected.name() if selected is not None and not sip.isdeleted(selected) else "未选择图层"
+            active = self._active_raster_layer
+            active_name = active.name() if active is not None and not sip.isdeleted(active) else "未选择"
+            self.layer_state_label.setText(f"选中：{selected_name}\n分析源：{active_name}\n可见图层：{len(self.map_canvas.layers())} 个")
 
     def _show_layer_context_menu(self, position):
         item = self.layer_tree.itemAt(position)
-        if item is None or item.data(0, Qt.UserRole) is None:
+        if item is None:
             return
         self.layer_tree.setCurrentItem(item)
         self._update_analysis_source_action()
-        menu = QMenu(self.layer_tree)
-        menu.addAction(self.set_analysis_source_action)
-        menu.exec_(self.layer_tree.viewport().mapToGlobal(position))
+        from etopo_analyzer.ui.layer_context_menu import build_layer_menu
+        menu = build_layer_menu(self, item)
+        try:
+            menu.exec_(self.layer_tree.viewport().mapToGlobal(position))
+        finally:
+            menu.deleteLater()
 
     def set_selected_analysis_source(self):
         """复用正式加载流程清除旧结果，并显示所选 DEM 的完整范围。"""
         layer = self._selected_analysis_source()
-        if layer is None or layer is self._active_raster_layer:
+        if layer is None or layer is self._active_raster_layer or (self._task_controls and self._task_controls.busy()):
             return
         group = self.layer_tree.currentItem().parent().text(0)
         self.show_layer(layer, layer_group=group)
@@ -1605,13 +1641,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
                 if visible_layer.id() != layer_id
             ]
 
-        if visible_layers:
-            self.map_canvas.show_layers(
-                visible_layers,
-                zoom_to_layer=False,
-            )
-        else:
-            self.map_canvas.clear_layers()
+        from etopo_analyzer.ui.layer_context_menu import set_visible_layers
+        set_visible_layers(self, visible_layers)
 
     def activate_point_query(self) -> None:
         """激活单点高程 / 水深查询工具。"""
@@ -1732,21 +1763,19 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             return
 
         output_path = self._next_clip_output_path()
+        source = self._active_raster_path
+        bounds = dict(bounds)
+        self._task_controls.start("裁剪", [("裁剪", lambda results: clip_raster_by_bounds(
+            source, str(output_path), bounds["west"], bounds["south"], bounds["east"], bounds["north"]))],
+            [output_path], lambda results: self._publish_clip(output_path, bounds, results[0]))
+
+    def _publish_clip(self, output_path, bounds, result):
 
         self.statusBar().showMessage(
             "正在裁剪，请稍候……"
         )
 
         try:
-            result = clip_raster_by_bounds(
-                self._active_raster_path,
-                str(output_path),
-                bounds["west"],
-                bounds["south"],
-                bounds["east"],
-                bounds["north"],
-            )
-
             output_layer = add_raster_layer(
                 result["output_path"],
                 output_path.stem,
@@ -1761,9 +1790,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"裁剪失败：{exc}"
             )
-            return
+            raise
 
         # 裁剪结果成为新的分析源，后续查询和分析都以它为准。
+        record_processing(output_layer, self._active_raster_path, "pixel_aligned_clip",
+                          {"requested_bounds": bounds, **result})
         self.show_layer(
             output_layer,
             layer_group="裁剪结果",
@@ -1788,14 +1819,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
     def apply_color_relief(self) -> None:
-        """为当前高程图层应用固定陆海分层设色。"""
+        """仅为左侧选中的高程图层设色。"""
 
-        if self._display_raster_layer is None:
+        layer = self._selected_style_layer()
+        if layer is None:
             return
 
         try:
             apply_etopo_color_relief(
-                self._display_raster_layer
+                layer
             )
         except (ValueError, RuntimeError) as exc:
             self.statusBar().showMessage(
@@ -1837,30 +1869,23 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         projected_path, hillshade_path = (
             self._next_hillshade_output_paths()
         )
+        source = self._active_raster_path
+        azimuth, altitude = self.hillshade_azimuth_spin.value(), self.hillshade_altitude_spin.value()
+        self._task_controls.start("地形阴影", [
+            ("局部投影", lambda results: project_raster_to_local_utm(source, str(projected_path))),
+            ("地形阴影", lambda results: generate_hillshade(str(projected_path), str(hillshade_path), azimuth=azimuth, altitude=altitude))],
+            [projected_path, hillshade_path], lambda results: self._publish_hillshade(
+                projected_path, hillshade_path, azimuth, altitude, *results))
+
+    def _publish_hillshade(self, projected_path, hillshade_path, azimuth, altitude, projection_result, hillshade_result):
         projected_layer = None
         hillshade_layer = None
-        azimuth = self.hillshade_azimuth_spin.value()
-        altitude = self.hillshade_altitude_spin.value()
 
         self.statusBar().showMessage(
             "正在建立局部米制投影并生成 Hillshade……"
         )
 
         try:
-            # 始终从活动分析 DEM 建立米制中间数据。
-            projection_result = (
-                project_raster_to_local_utm(
-                    self._active_raster_path,
-                    str(projected_path),
-                )
-            )
-            hillshade_result = generate_hillshade(
-                projection_result["output_path"],
-                str(hillshade_path),
-                azimuth=azimuth,
-                altitude=altitude,
-            )
-
             projected_layer = add_raster_layer(
                 projection_result["output_path"],
                 projected_path.stem,
@@ -1904,6 +1929,10 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             return
 
         # Hillshade 只改变显示组合，不替换 F03/F04 的分析源。
+        record_processing(projected_layer, self._active_raster_path, "local_utm",
+                          {"resampling": "bilinear", **projection_result})
+        record_processing(hillshade_layer, self._active_raster_path, "hillshade",
+                          {"projection": projection_result, "resampling": "bilinear", **hillshade_result})
         self.map_canvas.show_layers(
             [
                 hillshade_layer,
@@ -1973,6 +2002,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
                 analysis_key
             )
         )
+        source = self._active_raster_path
+        self._task_controls.start(analysis_label, [
+            ("局部投影", lambda results: project_raster_to_local_utm(source, str(projected_path))),
+            (analysis_label, lambda results: generate_analysis(str(projected_path), str(analysis_path)))],
+            [projected_path, analysis_path], lambda results: self._publish_terrain_analysis(
+                analysis_key, analysis_label, apply_renderer, projected_path, analysis_path, *results))
+
+    def _publish_terrain_analysis(self, analysis_key, analysis_label, apply_renderer, projected_path,
+                                  analysis_path, projection_result, analysis_result):
         analysis_layer = None
 
         self.statusBar().showMessage(
@@ -1980,17 +2018,6 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         try:
-            # 坡度和坡向都从当前活动分析 DEM 开始计算。
-            projection_result = (
-                project_raster_to_local_utm(
-                    self._active_raster_path,
-                    str(projected_path),
-                )
-            )
-            analysis_result = generate_analysis(
-                projection_result["output_path"],
-                str(analysis_path),
-            )
             analysis_layer = add_raster_layer(
                 analysis_result["output_path"],
                 analysis_path.stem,
@@ -2021,6 +2048,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             return
 
         # 只更新显示层，不调用 show_layer()，避免改写 F03/F04 数据源。
+        record_processing(analysis_layer, self._active_raster_path, analysis_key,
+                          {"projection": projection_result, "resampling": "bilinear", **analysis_result})
         self.map_canvas.show_layer(
             analysis_layer
         )
@@ -2095,6 +2124,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         output_path = self._next_contour_output_path()
         interval = self.contour_interval_spin.value()
         base = self.contour_base_spin.value()
+        source = self._active_raster_path
+        self._task_controls.start("等值线", [("等值线生成与分类", lambda results: generate_contours(
+            source, str(output_path), interval=interval, base=base))], [output_path],
+            lambda results: self._publish_contours(output_path, interval, base, results[0]))
+
+    def _publish_contours(self, output_path, interval, base, result):
         contour_layer = None
 
         self.statusBar().showMessage(
@@ -2102,13 +2137,6 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         try:
-            # 等值线直接使用活动 DEM，不进行 UTM 重投影。
-            result = generate_contours(
-                self._active_raster_path,
-                str(output_path),
-                interval=interval,
-                base=base,
-            )
             layer_source = (
                 f"{result['output_path']}"
                 f"|layername={result['layer_name']}"
@@ -2150,6 +2178,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             )
             return
 
+        record_processing(contour_layer, self._active_raster_path, "contours", result)
         visible_layers = [
             layer
             for layer in self.map_canvas.layers()
@@ -2211,14 +2240,16 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         """先完成采样和绘图，再替换成功结果；仅读取活动 DEM。"""
         if self._active_raster_path is None:
             return
+        source, interval = self._active_raster_path, self.profile_interval_spin.value() * 1000.0
+        vertices = list(vertices)
+        self._task_controls.start("地形剖面", [("沿线采样", lambda results: sample_elevation_profile(source, vertices, interval))],
+                                  [], lambda results: self._publish_profile(results[0]))
+
+    def _publish_profile(self, result):
         self.map_canvas.activate_pan()
         self.pan_action.setChecked(True)
         self.statusBar().showMessage("正在生成地形 / 海底剖面……")
         try:
-            result = sample_elevation_profile(
-                self._active_raster_path, vertices,
-                self.profile_interval_spin.value() * 1000.0,
-            )
             # 第一次使用时再导入 Matplotlib，避免拖慢普通启动。
             from etopo_analyzer.visualization.profile_plot import create_profile_figure
             from etopo_analyzer.ui.profile_panel import ProfilePanel
@@ -2285,11 +2316,21 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
     def _statistics_parameters_changed(self, *args):
         self._invalidate_statistics("参数已修改，需重新计算。")
 
-    def _invalidate_statistics(self, message):
+    def _invalidate_statistics(self, message, keep_result=False):
         # 任务号同时代表来源/参数版本，旧线程晚到的信号不能发布结果。
         self._statistics_task_id += 1
         if self._statistics_worker is not None:
             self._statistics_worker.requestInterruption()
+        if keep_result and not self._closing and self._statistics_result is not None:
+            from etopo_analyzer.core.export_service import result_sources, validate_sources
+            try:
+                validate_sources(result_sources(self._statistics_result))
+            except (OSError, ValueError):
+                pass
+            else:
+                self.cancel_statistics_action.setEnabled(False)
+                self.statistics_message.setText(message + " 当前显示上次有效结果。")
+                return
         self._statistics_result = None
         self.show_statistics_action.setEnabled(False)
         self.cancel_statistics_action.setEnabled(False)
@@ -2302,10 +2343,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.statistics_message.setText(message)
 
     def create_statistics(self):
+        if self._task_controls and self._task_controls.busy():
+            return
         if (self._active_raster_path is None or self._statistics_worker is not None
                 or self._comparison_controls.worker is not None or self._closing):
             return
-        self._invalidate_statistics("正在准备统计……")
+        self._invalidate_statistics("正在准备统计……", keep_result=True)
         try:
             text = self.statistics_thresholds_edit.text().replace("，", ",")
             thresholds = [float(part.strip()) for part in text.split(",")]
@@ -2331,20 +2374,21 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
     def cancel_statistics(self):
         if self._statistics_worker is not None:
-            self._invalidate_statistics("已请求取消，等待当前分块读取结束。")
+            self._invalidate_statistics("已请求取消，等待当前分块读取结束。", keep_result=True)
 
     def _statistics_progress_changed(self, task_id, percent, phase):
         if task_id == self._statistics_task_id and not self._closing:
             self.statistics_progress.setValue(percent)
+            self._task_controls.update_progress(percent, phase)
             self.statistics_message.setText(f"{phase}：{percent}%")
 
     def _statistics_failed(self, task_id, message):
         if task_id == self._statistics_task_id and not self._closing:
-            self._invalidate_statistics(f"统计失败：{message}")
+            self._invalidate_statistics(f"统计失败：{message}", keep_result=True)
 
     def _statistics_cancelled(self, task_id):
         if task_id == self._statistics_task_id and not self._closing:
-            self._invalidate_statistics("统计已取消。")
+            self._invalidate_statistics("统计已取消。", keep_result=True)
 
     def _statistics_succeeded(self, task_id, result):
         if task_id != self._statistics_task_id or self._closing:
@@ -2365,7 +2409,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
                 self._statistics_dock.setMinimumHeight(340)
                 self._statistics_dock.setFeatures(QDockWidget.DockWidgetClosable)
                 self.map_splitter.addWidget(self._statistics_dock)
+            old_panel = self._statistics_panel
             self._statistics_dock.setWidget(panel)
+            if old_panel is not None:
+                old_panel.clear()
+                old_panel.deleteLater()
         except Exception as exc:
             if panel is not None:
                 panel.clear()
@@ -2418,6 +2466,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         ])
 
     def closeEvent(self, event):
+        if self._task_controls.worker is not None:
+            self._closing = True
+            self._task_controls.cancel()
+            event.ignore()
+            return
         if self._comparison_controls.worker is not None:
             self._closing = True
             self._comparison_controls.cancel()
@@ -2575,3 +2628,4 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.contour_action.setEnabled(
             True
         )
+        self._update_style_action()

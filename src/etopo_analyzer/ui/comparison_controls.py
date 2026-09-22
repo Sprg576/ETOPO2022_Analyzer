@@ -108,6 +108,8 @@ class ComparisonControls(QWidget):
         idle = self.worker is None and self.window._statistics_worker is None and not self.window._closing
         self.start_action.setEnabled(idle and self.selected_layers() is not None)
         self.window.statistics_action.setEnabled(idle and self.window._active_raster_path is not None)
+        if self.window._task_controls is not None:
+            self.window._task_controls.refresh()
 
     def selection_changed(self, *args):
         self.invalidate("区域或参数已修改，请重新计算对比。")
@@ -124,10 +126,19 @@ class ComparisonControls(QWidget):
         self.region_b.blockSignals(False)
         self.selection_changed()
 
-    def invalidate(self, message):
+    def invalidate(self, message, keep_result=False):
         self.task_id += 1
         if self.worker is not None:
             self.worker.requestInterruption()
+        if keep_result and not self.window._closing and self.result is not None:
+            try:
+                self._check_result_sources(self.result)
+            except (OSError, RuntimeError):
+                pass
+            else:
+                self.cancel_action.setEnabled(False)
+                self.message.setText(message + " 当前显示上次有效结果。")
+                return
         self.result = None
         self.show_action.setEnabled(False)
         self.cancel_action.setEnabled(False)
@@ -139,10 +150,12 @@ class ComparisonControls(QWidget):
         self.message.setText(message)
 
     def start(self):
+        if self.window._task_controls and self.window._task_controls.busy():
+            return
         layers = self.selected_layers()
         if layers is None or self.worker is not None or self.window._statistics_worker is not None or self.window._closing:
             return
-        self.invalidate("正在校验两区域……")
+        self.invalidate("正在校验两区域……", keep_result=True)
         try:
             thresholds = [float(v.strip()) for v in self.thresholds.text().replace("，", ",").split(",")]
             validate_parameters(self.bins.value(), thresholds)
@@ -163,16 +176,17 @@ class ComparisonControls(QWidget):
 
     def cancel(self):
         if self.worker is not None:
-            self.invalidate("已请求取消，等待当前分块读取结束。")
+            self.invalidate("已请求取消，等待当前分块读取结束。", keep_result=True)
 
     def progress_changed(self, task_id, percent, phase):
         if task_id == self.task_id and not self.window._closing:
             self.progress.setValue(percent)
+            self.window._task_controls.update_progress(percent, phase)
             self.message.setText(f"{phase}：{percent}%")
 
     def failed(self, task_id, message):
         if task_id == self.task_id and not self.window._closing:
-            self.invalidate(f"对比未完成：{message}")
+            self.invalidate(f"对比未完成：{message}", keep_result=True)
 
     def _check_result_sources(self, result):
         layers = self.selected_layers()
@@ -200,7 +214,11 @@ class ComparisonControls(QWidget):
                 self.dock.setMinimumHeight(420)
                 self.dock.setFeatures(QDockWidget.DockWidgetClosable)
                 self.window.map_splitter.addWidget(self.dock)
+            old_panel = self.panel
             self.dock.setWidget(panel)
+            if old_panel is not None:
+                old_panel.clear()
+                old_panel.deleteLater()
             # QDockWidget 安装内容后会重算约束，此时再设置高度，避免图表被裁切。
             self.dock.setMinimumHeight(max(420, panel.minimumSizeHint().height() + 30))
         except Exception as exc:
