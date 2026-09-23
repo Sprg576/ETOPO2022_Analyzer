@@ -61,7 +61,7 @@ def validate_comparison_sources(path_a, path_b):
 
 
 def compare_regions(path_a, path_b, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
-                    *, block_size=512, progress=None, cancelled=None):
+                    *, block_size=512, progress=None, cancelled=None, roi_a=None, roi_b=None):
     """每区两遍读取，输出以 B−A 为方向的结构化比较结果。"""
     started = time.perf_counter()
     thresholds = validate_parameters(bin_count, thresholds)
@@ -76,19 +76,25 @@ def compare_regions(path_a, path_b, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
     blocks = [math.ceil(s["width"] / block_size) * math.ceil(s["height"] / block_size) for s in sources]
     total = 2 * sum(blocks)
     completed = [0, 0]
+    rois = (roi_a, roi_b)
     def report(index):
         def callback(percent, phase):
             # 扫描器每处理一块回调一次，避免整数百分比导致两区进度失真。
-            completed[index] += 1
+            if any(roi is not None for roi in rois):
+                completed[index] = percent
+                value = sum(completed) // 2
+            else:
+                completed[index] += 1
+                value = int(100 * sum(completed) / total)
             if progress is not None:
-                progress(int(100 * sum(completed) / total), f"区域 {'AB'[index]}：{phase}")
+                progress(value, f"区域 {'AB'[index]}：{phase}")
         return callback
     with ExitStack() as stack:
         scans = []
         extrema = []
         for i, source in enumerate(sources):
             scan = _statistics_scan(source["path"], bin_count, thresholds, block_size=block_size,
-                                    progress=report(i), cancelled=cancelled)
+                                    progress=report(i), cancelled=cancelled, roi=rois[i])
             stack.callback(scan.close)
             scans.append(scan)
             extrema.append(next(scan))
@@ -101,7 +107,8 @@ def compare_regions(path_a, path_b, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
     for result, source in zip(results, sources):
         result["source"]["bounds"] = source["bounds"]
         result["source"]["vertical_crs"] = source["vertical"].to_string()
-        result["parameters"]["scope"] = "selected_dem_full_extent"
+        if "roi" not in result["parameters"]:
+            result["parameters"]["scope"] = "selected_dem_full_extent"
         count = result["statistics"]["valid_count"]
         result["histogram"]["frequencies"] = [n / count for n in result["histogram"]["counts"]]
         result["area"]["valid_coverage_fraction"] = min(1.0, result["area"]["valid_m2"] / result["area"]["footprint_m2"])

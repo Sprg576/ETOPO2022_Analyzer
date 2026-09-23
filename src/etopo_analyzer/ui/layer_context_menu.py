@@ -90,6 +90,8 @@ def remove_layer(window, layer, from_project=False):
         window.analysis_source_label.setAccessibleName("未选择分析数据源")
         window.analysis_crs_label.setText("--")
         window.analysis_size_label.setText("--")
+        window.analysis_resolution_label.setText("--")
+        window.analysis_unit_label.setText("--")
         window.longitude_status_label.setText("经度：--")
         window.latitude_status_label.setText("纬度：--")
         window.elevation_status_label.setText("高程/水深：--")

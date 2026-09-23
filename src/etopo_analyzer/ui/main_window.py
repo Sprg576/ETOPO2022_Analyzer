@@ -130,7 +130,8 @@ from etopo_analyzer.visualization.contour_renderer import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CLIP_OUTPUT_DIR = PROJECT_ROOT / "outputs"
+from etopo_analyzer.app_paths import output_directory
+DEFAULT_CLIP_OUTPUT_DIR = output_directory()
 ICON_DIR = Path(__file__).resolve().parent / "icons"
 
 
@@ -142,8 +143,9 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        from etopo_analyzer.version import VERSION
         self.setWindowTitle(
-            "ETOPO2022 Analyzer - 基于 ETOPO2022 的全球地形与海底地形综合分析系统"
+            f"ETOPO2022 Analyzer {VERSION} - 基于 ETOPO2022 的全球地形与海底地形综合分析系统"
         )
 
         self.setWindowIcon(
@@ -177,7 +179,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         self.map_canvas.setCanvasColor(
-            QColor("#E9EDF2")
+            QColor("#D7DDE4")
         )
 
         self.map_tabs = QTabWidget(self)
@@ -242,6 +244,10 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._task_controls = TaskControls(self)
         from etopo_analyzer.ui.clip_controls import ClipControls
         self.clip_controls = ClipControls(self)
+        from etopo_analyzer.ui.polygon_controls import PolygonControls
+        self.polygon_controls = PolygonControls(self)
+        from etopo_analyzer.ui.workspace_controls import WorkspaceControls
+        self.workspace_controls = WorkspaceControls(self)
         from etopo_analyzer.ui.panel_layout import make_panel_responsive
         make_panel_responsive(self.analysis_dock)
         make_panel_responsive(self.clip_controls)
@@ -256,7 +262,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
                 self.layer_dock,
                 self.analysis_dock,
             ],
-            [round(self.width() * .18)] * 2,
+            [round(self.width() * .18), 320],
             Qt.Horizontal,
         )
 
@@ -270,7 +276,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         docks = [dock for dock in (self.layer_dock, self.analysis_dock)
                  if not dock.isFloating() and dock.isVisible()]
         if docks:
-            self.resizeDocks(docks, [width] * len(docks), Qt.Horizontal)
+            self.resizeDocks(docks, [width if dock is self.layer_dock else max(320, width) for dock in docks], Qt.Horizontal)
 
     @staticmethod
     def _icon(file_name: str) -> QIcon:
@@ -422,6 +428,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         toolbar.addAction(
             self.zoom_out_action
         )
+        toolbar.addSeparator()
 
         # -------------------------------------------------
         # Point Query
@@ -520,7 +527,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         self.hillshade_action = QAction(
             self._icon("hillshade.svg"),
-            "山体阴影",
+            "生成山体阴影",
             self,
         )
 
@@ -601,9 +608,6 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             self.full_extent_action
         )
 
-        toolbar.insertSeparator(
-            self.pan_action
-        )
 
         toolbar.addSeparator()
 
@@ -625,6 +629,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         """创建与功能阶段对应的主菜单。"""
 
         file_menu = self.menuBar().addMenu("文件(&F)")
+        self._file_menu = file_menu
         file_menu.addAction(self.open_raster_action)
         file_menu.addSeparator()
 
@@ -739,10 +744,11 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         tree_layout.addWidget(self.layer_tree)
 
         hint = QLabel(
-            "勾选控制显示；右键可缩放、重命名、移除或切换分析源",
+            "提示：右键图层查看更多操作",
             tree_panel,
         )
         hint.setObjectName("LayerPanelHint")
+        hint.setToolTip("勾选控制显示；右键可缩放、重命名、移除或切换分析源。")
         hint.setWordWrap(True)
         hint.setContentsMargins(10, 2, 10, 0)
         tree_layout.addWidget(hint)
@@ -807,7 +813,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
         self.layer_properties_table.setColumnCount(2)
         self.layer_properties_table.setRowCount(0)
-        self.layer_properties_table.horizontalHeader().hide()
+        self.layer_properties_table.setHorizontalHeaderLabels(["属性", "值"])
         self.layer_properties_table.verticalHeader().hide()
         self.layer_properties_table.setEditTriggers(
             QAbstractItemView.NoEditTriggers
@@ -835,8 +841,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         splitter.addWidget(tree_panel)
         splitter.addWidget(properties_panel)
         splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([530, 210])
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([480, 320])
 
         self.layer_dock.setWidget(splitter)
         self.addDockWidget(
@@ -922,24 +928,20 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         if isinstance(layer, QgsRasterLayer):
             provider = layer.dataProvider()
-            data_type = str(
-                provider.sourceDataType(1)
-            ).removeprefix("DataType.")
+            from .data_summary import short_name, resolution_text, band_details
+            data_type, unit, nodata = band_details(layer)
             properties = [
-                ("名称", layer.name()),
+                ("名称", short_name(layer)),
                 ("类型", "栅格"),
+                ("尺寸", f"{layer.width()} × {layer.height()}"),
                 (
                     "分辨率",
-                    f"{layer.rasterUnitsPerPixelX():.6g} × "
-                    f"{layer.rasterUnitsPerPixelY():.6g}",
+                    resolution_text(layer),
                 ),
                 ("波段数", str(layer.bandCount())),
                 ("数据类型", data_type),
-                ("空间参考", crs_text),
-                (
-                    "行列数",
-                    f"{layer.width()} × {layer.height()}",
-                ),
+                ("NoData", "未设置" if nodata is None else f"{nodata:g}"),
+                ("CRS", crs_text),
                 ("范围", extent_text),
             ]
         elif isinstance(layer, QgsVectorLayer):
@@ -967,6 +969,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             ]
 
         self._set_layer_properties(properties)
+        self.layer_properties_table.item(0, 1).setToolTip(layer.name() + "\n" + layer.source())
 
     def _create_analysis_dock(self) -> None:
         """创建右侧 ArcGIS 风格地形分析面板。"""
@@ -982,7 +985,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             Qt.LeftDockWidgetArea
             | Qt.RightDockWidgetArea
         )
-        self.analysis_dock.setMinimumWidth(220)
+        self.analysis_dock.setMinimumWidth(260)
 
         scroll_area = QScrollArea(
             self.analysis_dock
@@ -1003,6 +1006,14 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 8)
         layout.setSpacing(0)
+        self.analysis_task_label = QLabel("", container)
+        self.analysis_task_label.setWordWrap(True)
+        self.analysis_task_label.setContentsMargins(10, 6, 10, 6)
+        self.analysis_task_label.hide()
+        layout.addWidget(self.analysis_task_label)
+        self.analysis_task_progress = QProgressBar(container)
+        self.analysis_task_progress.hide()
+        layout.addWidget(self.analysis_task_progress)
 
         source_content = QWidget(container)
         source_content.setObjectName("SectionBody")
@@ -1014,14 +1025,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             QFormLayout.WrapLongRows
         )
 
-        self.analysis_source_label = QLabel(
+        from .data_summary import SummaryLabel
+        self.analysis_source_label = SummaryLabel(
             "未加载",
             source_content,
         )
         self.analysis_source_label.setObjectName(
             "SourceValue"
         )
-        self.analysis_source_label.setWordWrap(True)
+        self.analysis_source_label.setWordWrap(False)
         self.analysis_source_label.setSizePolicy(
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
@@ -1034,21 +1046,22 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "--",
             source_content,
         )
+        source_layout.addRow(self.analysis_source_label)
         source_layout.addRow(
-            "分析源",
-            self.analysis_source_label,
-        )
-        source_layout.addRow(
-            "水平 CRS",
+            "CRS",
             self.analysis_crs_label,
         )
         source_layout.addRow(
-            "行列数",
+            "尺寸",
             self.analysis_size_label,
         )
+        self.analysis_resolution_label = QLabel("--", source_content)
+        self.analysis_unit_label = QLabel("--", source_content)
+        source_layout.addRow("分辨率", self.analysis_resolution_label)
+        source_layout.addRow("高程单位", self.analysis_unit_label)
         self._add_collapsible_section(
             layout,
-            "当前数据",
+            "当前分析源",
             source_content,
         )
 
@@ -1112,7 +1125,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
         self._add_collapsible_section(
             layout,
-            "地形可视化",
+            "山体阴影与设色",
             visualization_content,
         )
 
@@ -1218,7 +1231,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         )
 
         contour_hint = QLabel(
-            "直接基于当前 DEM 生成，无需转换 UTM；建议先裁剪局部区域。",
+            "基于当前 DEM 生成，建议先裁剪局部区域。",
             contour_content,
         )
         contour_hint.setObjectName("PanelHint")
@@ -1257,7 +1270,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._statistics_controls = statistics_content
         statistics_layout = QVBoxLayout(statistics_content)
         statistics_layout.setContentsMargins(10, 8, 10, 10)
-        hint = QLabel("统计活动 DEM 全范围；局部区域请先裁剪。地图视野不影响范围。", statistics_content)
+        hint = QLabel("统计当前分析 DEM 全范围，与地图视野无关。", statistics_content)
+        self.statistics_scope_hint = hint
         hint.setWordWrap(True)
         hint.setObjectName("PanelHint")
         hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -1330,6 +1344,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         header.setToolButtonStyle(
             Qt.ToolButtonTextBesideIcon
         )
+        header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         header.toggled.connect(
             lambda checked, button=header, body=content: (
                 self._toggle_section(button, body, checked)
@@ -1400,7 +1415,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             "纬度：--"
         )
         self.elevation_status_label = QLabel(
-            "高程/水深：--"
+            "高程：--"
         )
         self.crs_status_label = QLabel(
             "CRS：--"
@@ -1455,11 +1470,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
     def _show_about_dialog(self) -> None:
         """显示简明系统信息。"""
+        from etopo_analyzer.version import VERSION
 
         QMessageBox.about(
             self,
             "关于 ETOPO2022 Analyzer",
-            "ETOPO2022 全球地形与海底地形综合分析系统\n"
+            f"ETOPO2022 全球地形与海底地形综合分析系统 {VERSION}\n"
             "基于 QGIS 3.44 LTR、PyQGIS 与 GDAL。",
         )
 
@@ -1503,10 +1519,20 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         if hasattr(self, "layer_state_label"):
             item = self.layer_tree.currentItem()
             selected = self._managed_layers.get(item.data(0, Qt.UserRole)) if item else None
-            selected_name = selected.name() if selected is not None and not sip.isdeleted(selected) else "未选择图层"
+            from .data_summary import short_name
+            selected_name = short_name(selected) if selected is not None and not sip.isdeleted(selected) else "未选择图层"
             active = self._active_raster_layer
-            active_name = active.name() if active is not None and not sip.isdeleted(active) else "未选择"
-            self.layer_state_label.setText(f"选中：{selected_name}\n分析源：{active_name}\n可见图层：{len(self.map_canvas.layers())} 个")
+            active_name = short_name(active) if active is not None and not sip.isdeleted(active) else "未选择"
+            if active is not None and not sip.isdeleted(active) and hasattr(self, "analysis_source_label"):
+                self.analysis_source_label.setText(active_name)
+            full = f"选中：{selected_name}\n分析源：{active_name}\n可见图层：{len(self.map_canvas.layers())} 个"
+            def brief(name):
+                return name if len(name) <= 27 else name[:24] + "…"
+            text = f"分析源：{brief(active_name)}\n可见图层：{len(self.map_canvas.layers())} 个"
+            if selected is not active:
+                text = f"选中：{brief(selected_name)}\n" + text
+            self.layer_state_label.setText(text)
+            self.layer_state_label.setToolTip(full)
 
     def _show_layer_context_menu(self, position):
         item = self.layer_tree.itemAt(position)
@@ -1546,9 +1572,10 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.layer_tree.blockSignals(True)
 
         try:
+            from .data_summary import short_name
             layer_item = QTreeWidgetItem(
                 group_item,
-                [layer.name()],
+                [short_name(layer)],
             )
             layer_item.setData(
                 0,
@@ -1577,6 +1604,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
 
         self._layer_items[layer.id()] = layer_item
         self._managed_layers[layer.id()] = layer
+        if hasattr(self, "workspace_controls"):
+            self.workspace_controls.record_layer(layer)
         self.layer_order_controls.sync()
         group_item.setExpanded(True)
         if self._comparison_controls is not None:
@@ -1736,7 +1765,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             f"纬度：{abs(latitude):.6f}° {latitude_direction}"
         )
         self.elevation_status_label.setText(
-            f"高程/水深：{status_value_text}"
+            status_value_text
         )
 
         self.statusBar().showMessage(
@@ -2312,6 +2341,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             self._show_profile_error(str(exc))
             return
         self._profile_result = result
+        self.workspace_controls.record_result("profile", result)
         self._profile_overlay.set_vertices(result["vertices"])
         self.regenerate_profile_action.setEnabled(True)
         self.show_profile_action.setEnabled(True)
@@ -2402,11 +2432,12 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             text = self.statistics_thresholds_edit.text().replace("，", ",")
             thresholds = [float(part.strip()) for part in text.split(",")]
             validate_parameters(self.statistics_bins_spin.value(), thresholds)
+            roi = self.polygon_controls.roi("statistics")
         except (ValueError, TypeError) as exc:
             self.statistics_message.setText(f"参数无效：{exc}")
             return
         worker = StatisticsWorker(self._statistics_task_id, self._active_raster_path,
-                                  self.statistics_bins_spin.value(), thresholds, self)
+                                  self.statistics_bins_spin.value(), thresholds, self, roi=roi)
         self._statistics_worker = worker
         self._comparison_controls.update_actions()
         worker.succeeded.connect(self._statistics_succeeded)
@@ -2419,6 +2450,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.statistics_progress.setValue(0)
         self.statistics_progress.show()
         self._analysis_scroll.ensureWidgetVisible(self._statistics_controls)
+        self.analysis_dock.show()
+        self.analysis_dock.raise_()
         worker.start()
 
     def cancel_statistics(self):
@@ -2471,9 +2504,10 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             return
         self._statistics_panel = panel
         self._statistics_result = result
+        self.workspace_controls.record_result("statistics", result)
         self.show_statistics_action.setEnabled(True)
         self.statistics_message.setText(
-            f"完成：有效像元 {result['statistics']['valid_count']:,}；"
+            f"✓ 统计完成：有效像元 {result['statistics']['valid_count']:,}；"
             f"有效面积 {result['area']['valid_m2'] / 1e6:,.3f} km²。"
         )
         self.show_statistics()
@@ -2492,6 +2526,7 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._comparison_controls.update_actions()
         if self.statistics_message.text().startswith("已请求取消"):
             self.statistics_message.setText("统计已取消。")
+        self.analysis_task_label.setText(self.statistics_message.text())
         if self._closing:
             QTimer.singleShot(0, self.close)
 
@@ -2530,6 +2565,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
             self.cancel_statistics()
             event.ignore()
             return
+        self._closing = False
+        if not getattr(self, "_close_approved", False):
+            self._task_controls.refresh()
+            if not self.workspace_controls.confirm_discard():
+                event.ignore()
+                self.workspace_controls.refresh()
+                return
+            self._close_approved = True
+        self._closing = True
         super().closeEvent(event)
 
     def show_layer(
@@ -2580,12 +2624,8 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self._contour_layer = None
 
         source_name = Path(layer.source()).name
-        # 在下划线和扩展名前允许换行，避免长文件名撑宽参数面板。
-        display_source_name = (
-            source_name
-            .replace("_", "_\u200b")
-            .replace(".", ".\u200b")
-        )
+        from .data_summary import short_name, resolution_text, band_details
+        display_source_name = short_name(layer)
         self.analysis_source_label.setText(
             display_source_name
         )
@@ -2613,13 +2653,15 @@ class ETOPOAnalyzerMainWindow(QMainWindow):
         self.analysis_size_label.setText(
             f"{layer.width()} × {layer.height()}"
         )
+        self.analysis_resolution_label.setText(resolution_text(layer))
+        self.analysis_unit_label.setText(band_details(layer)[1])
 
         resolution_x = layer.rasterUnitsPerPixelX()
         resolution_y = layer.rasterUnitsPerPixelY()
         self.resolution_status_label.setText(
-            "分辨率："
-            f"{resolution_x:.6g} × {resolution_y:.6g}"
+            resolution_text(layer)
         )
+        self.resolution_status_label.setToolTip(f"分辨率：{resolution_x:.8g} × {resolution_y:.8g}（源坐标单位）")
 
         self._point_query_tool = (
             PointQueryMapTool(

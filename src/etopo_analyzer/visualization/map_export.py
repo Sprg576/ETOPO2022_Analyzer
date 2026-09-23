@@ -2,17 +2,60 @@
 
 import math
 import os
+from copy import deepcopy
 from pathlib import Path
 from qgis.PyQt.QtCore import QSize, Qt, QEventLoop, QTimer, QRectF
 from qgis.PyQt.QtGui import QImage, QPainter, QColor, QFont, QPolygonF, QPen, QFontDatabase
 from qgis.core import (QgsMapSettings, QgsMapRendererParallelJob, QgsLayerTree,
                        QgsLayerTreeModel, QgsLegendSettings, QgsLegendRenderer, QgsLegendStyle,
                        QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsPointXY, QgsProject, QgsUnitTypes,
-                       QgsRenderContext, QgsMapLayerStyle)
+                       QgsRenderContext, QgsMapLayerStyle, QgsVectorLayer, QgsFeature,
+                       QgsGeometry, QgsFillSymbol, QgsPalLayerSettings, QgsTextFormat,
+                       QgsTextBufferSettings, QgsVectorLayerSimpleLabeling)
 from etopo_analyzer.core.export_service import check_cancelled, layer_processing
 
 
-def export_map(folder, canvas, title, pixels=2400, dpi=300, profile=None, cancelled=None, progress=None):
+def polygon_layers(regions, scale=1):
+    """独立内存图层交给 QGIS 投影、旋转、裁切和标注，不修改画布图层。"""
+    from etopo_analyzer.core.polygon_roi import normalize_polygon
+    layers = []
+    for region in regions:
+        polygon = normalize_polygon(region["geometry"])
+        layer = QgsVectorLayer("Polygon?crs=EPSG:4326", region["name"], "memory")
+        feature = QgsFeature()
+        feature.setGeometry(QgsGeometry.fromPolygonXY([
+            [QgsPointXY(*point) for point in ring] for ring in polygon["coordinates"]
+        ]).densifyByDistance(.1))
+        layer.dataProvider().addFeatures([feature])
+        layer.updateExtents()
+        color = QColor(region["color"])
+        fill = QColor(color)
+        fill.setAlpha(30)
+        layer.renderer().setSymbol(QgsFillSymbol.createSimple({
+            "color": fill.name(QColor.HexArgb), "outline_color": color.name(),
+            "outline_width": str(max(2, .5 * scale)), "outline_width_unit": "Pixel", "joinstyle": "round"}))
+        labels = QgsPalLayerSettings()
+        labels.fieldName = "'" + region["name"].replace("'", "''") + "'"
+        labels.isExpression = True
+        format_ = QgsTextFormat()
+        format_.setFont(QFont("Microsoft YaHei"))
+        format_.setSizeUnit(QgsUnitTypes.RenderPixels)
+        format_.setSize(max(12, 4 * scale))
+        format_.setColor(color)
+        buffer = QgsTextBufferSettings()
+        buffer.setEnabled(True)
+        buffer.setSizeUnit(QgsUnitTypes.RenderPixels)
+        buffer.setSize(max(1, .4 * scale))
+        buffer.setColor(QColor("white"))
+        format_.setBuffer(buffer)
+        labels.setFormat(format_)
+        layer.setLabeling(QgsVectorLayerSimpleLabeling(labels))
+        layer.setLabelsEnabled(True)
+        layers.append(layer)
+    return layers
+
+
+def export_map(folder, canvas, title, pixels=2400, dpi=300, profile=None, cancelled=None, progress=None, *, polygons=None):
     check_cancelled(cancelled)
     # 某些 Windows 无界面会话没有系统字体枚举；显式加载已安装字体。
     if "Microsoft YaHei" not in QFontDatabase().families():
@@ -23,9 +66,12 @@ def export_map(folder, canvas, title, pixels=2400, dpi=300, profile=None, cancel
     clones = [layer.clone() for layer in settings.layers()]
     if not clones:
         raise ValueError("当前地图没有可导出的图层。")
-    settings.setLayers(clones)
+    regions = deepcopy(polygons or [])
+    scale = pixels / 260.0  # 版面毫米到像素比；不受画布大小和渲染 DPI 影响。
+    overlays = polygon_layers(regions, scale)
+    settings.setLayers(overlays + clones)
     tree = QgsLayerTree()
-    for layer in clones:
+    for layer in overlays + clones:
         tree.addLayer(layer)
     model = QgsLayerTreeModel(tree)
     legend_settings = QgsLegendSettings()
@@ -34,7 +80,6 @@ def export_map(folder, canvas, title, pixels=2400, dpi=300, profile=None, cancel
         legend_style = legend_settings.style(style)
         legend_style.setFont(QFont("Microsoft YaHei", 10))
         legend_settings.setStyle(style, legend_style)
-    scale = pixels / 260.0  # 稳定的版面毫米到像素比，独立于印刷 DPI。
     legend_settings.setDpi(round(scale * 25.4))
     legend = QgsLegendRenderer(model, legend_settings)
     legend_size = legend.minimumSize()
@@ -142,4 +187,5 @@ def export_map(folder, canvas, title, pixels=2400, dpi=300, profile=None, cancel
     return {"title": title, "crs_wkt": crs.toWkt(), "extent": [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()],
             "rotation": settings.rotation(), "pixels": [pixels, height], "dpi": dpi,
             "layers": layer_records,
+            "polygons": regions,
             "profile_vertices": profile["vertices"] if profile else None}

@@ -10,6 +10,7 @@ from osgeo import gdal
 from pyproj import CRS
 
 from etopo_analyzer.core.pixel_area import pixel_row_areas
+from etopo_analyzer.core.polygon_roi import PolygonMask
 
 
 gdal.UseExceptions()
@@ -53,10 +54,10 @@ def _metre_unit(dataset, band):
 
 
 def calculate_raster_statistics(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
-                                *, block_size=512, progress=None, cancelled=None):
+                                *, block_size=512, progress=None, cancelled=None, roi=None):
     """保持 F09 接口；两遍扫描使用本区域的自动箱界。"""
     scan = _statistics_scan(raster_path, bin_count, thresholds, block_size=block_size,
-                            progress=progress, cancelled=cancelled)
+                            progress=progress, cancelled=cancelled, roi=roi)
     try:
         next(scan)
         return _finish_statistics_scan(scan)
@@ -83,7 +84,7 @@ def _finish_statistics_scan(scan, edges=None):
 
 
 def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
-                     *, block_size=512, progress=None, cancelled=None):
+                     *, block_size=512, progress=None, cancelled=None, roi=None):
     """像元等权统计和椭球面积分级；回调不依赖 Qt。"""
     thresholds = validate_parameters(bin_count, thresholds)
     if isinstance(block_size, bool) or not isinstance(block_size, int) or not 1 <= block_size <= 512:
@@ -113,7 +114,10 @@ def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
         if not band.GetMaskFlags() & gdal.GMF_ALL_VALID:
             mask_band = band.GetMaskBand()
         width, height = dataset.RasterXSize, dataset.RasterYSize
-        total_blocks = math.ceil(width / block_size) * math.ceil(height / block_size)
+        polygon_mask = PolygonMask(dataset, roi) if roi is not None else None
+        x0, y0, x1, y1 = polygon_mask.window if polygon_mask else (0, 0, width, height)
+        total_blocks = math.ceil((x1 - x0) / block_size) * math.ceil((y1 - y0) / block_size)
+        total_count, footprint = 0, 0.0
         class_count = np.zeros(len(thresholds) + 1, dtype=np.int64)
         class_area = np.zeros(len(thresholds) + 1, dtype=np.float64)
         sign_count = np.zeros(2, dtype=np.int64)
@@ -126,11 +130,13 @@ def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
         second_count = 0
         for pass_index in range(2):
             block_index = 0
-            for y in range(0, height, block_size):
-                rows = min(block_size, height - y)
-                for x in range(0, width, block_size):
+            for y in range(y0, y1, block_size):
+                rows = min(block_size, y1 - y)
+                for x in range(x0, x1, block_size):
                     check_cancel()
-                    columns = min(block_size, width - x)
+                    columns = min(block_size, x1 - x)
+                    inside = (polygon_mask.block(x, y, columns, rows) if polygon_mask
+                              else np.ones((rows, columns), dtype=bool))
                     raw = band.ReadAsArray(x, y, columns, rows)
                     if raw is None:
                         raise RuntimeError("GDAL 无法读取统计分块。")
@@ -150,10 +156,12 @@ def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
                         values = raw.astype(np.float64) * scale + offset
                     finite = np.isfinite(values)
                     if pass_index == 0:
-                        invalid["raw_nodata_or_nonfinite"] += int(raw.size - np.count_nonzero(raw_valid))
-                        invalid["mask_only"] += int(np.count_nonzero(raw_valid & ~valid))
-                        invalid["transformed_nonfinite"] += int(np.count_nonzero(valid & ~finite))
-                    valid &= finite
+                        total_count += int(np.count_nonzero(inside))
+                        footprint += float(np.sum(row_areas[y:y + rows] * inside.sum(axis=1)))
+                        invalid["raw_nodata_or_nonfinite"] += int(np.count_nonzero(inside & ~raw_valid))
+                        invalid["mask_only"] += int(np.count_nonzero(inside & raw_valid & ~valid))
+                        invalid["transformed_nonfinite"] += int(np.count_nonzero(inside & valid & ~finite))
+                    valid &= finite & inside
                     z = values[valid]
                     if pass_index == 0 and z.size:
                         n = int(z.size)
@@ -184,6 +192,8 @@ def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
                                  "基础统计与分级面积" if pass_index == 0 else "高程直方图")
             if pass_index == 0:
                 if count == 0:
+                    if polygon_mask:
+                        raise ValueError("多边形内没有有效 DEM 像元；请检查区域大小、位置及 NoData。")
                     raise ValueError("DEM 全部为 NoData 或无效值，无法统计。")
                 if not all(math.isfinite(v) for v in (mean, m2)):
                     raise ValueError("高程数值过大，无法可靠计算统计量。")
@@ -203,7 +213,8 @@ def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
         tolerance = max(1e-3, valid_area * 1e-10)
         if abs(float(class_area.sum()) - valid_area) > tolerance or abs(float(sign_area.sum()) - valid_area) > tolerance:
             raise RuntimeError("分级面积未闭合，结果不予发布。")
-        footprint = float(np.sum(row_areas) * width)
+        if polygon_mask is None:
+            footprint = float(np.sum(row_areas) * width)
         crs = CRS.from_wkt(dataset.GetProjection())
         classes = []
         for i, n in enumerate(class_count):
@@ -217,12 +228,15 @@ def _statistics_scan(raster_path, bin_count=50, thresholds=DEFAULT_THRESHOLDS,
             source=dict(band=1, width=width, height=height, geotransform=list(dataset.GetGeoTransform()),
                         crs_wkt=crs.to_wkt(), horizontal_crs=crs.to_2d().to_string(),
                         unit="m", size_bytes=signature[0], mtime_ns=signature[1]),
-            parameters=dict(scope="active_dem_full_extent", scale=scale, offset=offset,
+            parameters=dict(scope="polygon_pixel_centers" if polygon_mask else "active_dem_full_extent",
+                            **({"roi": polygon_mask.polygon, "roi_crs": "EPSG:4326",
+                                "roi_inclusion": "pixel_center", "roi_area": "selected_whole_pixels"} if polygon_mask else {}),
+                            scale=scale, offset=offset,
                             validity="raw_nodata_nonfinite_then_mask_then_scale_offset_finite",
                             std_ddof=0, weighting="pixel_equal", requested_bin_count=int(bin_count),
                             thresholds_m=thresholds.tolist(), area_method="wgs84_parallel_meridian_integral"),
-            statistics=dict(total_count=width * height, valid_count=count,
-                            invalid_count=width * height - count, invalid_reasons=invalid,
+            statistics=dict(total_count=total_count, valid_count=count,
+                            invalid_count=total_count - count, invalid_reasons=invalid,
                             min_m=minimum, max_m=maximum, mean_m=mean, std_m=math.sqrt(max(0.0, m2 / count))),
             histogram=dict(bin_edges_m=edges.tolist(), counts=histogram.tolist(),
                            interval_rule="left_closed_right_open_last_closed", ordinate="pixel_count"),

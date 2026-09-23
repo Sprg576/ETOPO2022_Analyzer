@@ -43,7 +43,8 @@ class StatisticsPanel(QWidget):
         self.tabs = QTabWidget(self)
         layout.addWidget(self.tabs)
         stat, area = result["statistics"], result["area"]
-        rows = [("统计范围", "活动 DEM 全部像元；有效像元参与统计"),
+        polygon = "roi" in result["parameters"]
+        rows = [("统计范围", "多边形内像元中心；仅统计有效 DEM" if polygon else "活动 DEM 全部像元；有效像元参与统计"),
                 ("计算口径", "高程单位 m；像元等权；总体标准差 ddof=0")]
         for key, title in (("total_count", "总像元数"), ("valid_count", "有效像元数"),
                            ("invalid_count", "无效像元数（含 NoData）")):
@@ -51,7 +52,7 @@ class StatisticsPanel(QWidget):
         for key, title in (("min_m", "最小高程（m）"), ("max_m", "最大高程（m）"),
                            ("mean_m", "平均高程（m）"), ("std_m", "总体标准差（m）")):
             rows.append((title, f"{stat[key]:.6f}"))
-        for key, title in (("footprint_m2", "完整格网面积（km²）"),
+        for key, title in (("footprint_m2", "多边形入选格网面积（km²）" if polygon else "完整格网面积（km²）"),
                            ("valid_m2", "有效面积（km²）"), ("invalid_m2", "无效面积（km²）")):
             rows.append((title, f"{area[key] / 1e6:.6f}"))
         for item in result["sign_summary"]:
@@ -93,6 +94,8 @@ class StatisticsPanel(QWidget):
         area_header.setSectionResizeMode(QHeaderView.Stretch)
         self.tabs.addTab(self.area_table, "分级面积")
         hint = QLabel("面积为 WGS84 椭球水平面积；占比以有效像元为分母。负高程不等同于真实海洋。")
+        if polygon:
+            hint.setText("范围按像元中心入选；面积为入选整像元的椭球水平面积，并非精确矢量面积。分级占比以有效像元/面积为分母。")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.canvas.draw_idle()

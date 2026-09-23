@@ -71,6 +71,8 @@ class TaskControls(QObject):
     def update_progress(self, percent, phase):
         self.label.setText(phase)
         self.progress.setValue(percent)
+        self.window.analysis_task_label.setText(phase)
+        self.window.analysis_task_progress.setValue(percent)
 
     def refresh(self):
         w = self.window
@@ -80,6 +82,9 @@ class TaskControls(QObject):
         w.cancel_task_action.setToolTip("取消当前计算任务")
         self.progress.setVisible(busy)
         self.label.setVisible(busy)
+        w.analysis_task_progress.setVisible(busy)
+        if busy:
+            w.analysis_task_label.show()
         if busy and not self.label.text():
             self.update_progress(0, "正在计算")
         if not busy:
@@ -96,6 +101,8 @@ class TaskControls(QObject):
         w._update_style_action()
         if hasattr(w, "clip_controls"):
             w.clip_controls.set_busy(busy)
+        if hasattr(w, "polygon_controls"):
+            w.polygon_controls.set_busy(busy)
         if self.worker is not None and self.inputs is None:
             widgets = w._analysis_scroll.findChildren((QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox))
             self.inputs = [(widget, widget.isEnabled()) for widget in widgets]
@@ -142,6 +149,7 @@ class TaskControls(QObject):
                     w.statusBar().showMessage(f"{name}失败：{exc}")
             finally:
                 self.worker = None
+                w.analysis_task_label.setText(w.statusBar().currentMessage())
                 worker.deleteLater()
                 self.refresh()
                 if w._closing:

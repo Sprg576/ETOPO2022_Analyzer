@@ -1,6 +1,7 @@
 """F08/F09/F10 数值表；UTF-8 BOM，单位与百分比明确。"""
 
 import csv
+import json
 from .export_service import check_cancelled
 
 
@@ -36,6 +37,19 @@ METRICS = [("total_count", "总像元数", "个"), ("valid_count", "有效像元
 
 def export_csv(folder, kind, result, cancelled=None):
     write = lambda filename, headers, rows: _write(folder, filename, headers, rows, cancelled)
+    regions = result.get("regions", {"statistics": result})
+    features = []
+    for key, region in regions.items():
+        polygon = region.get("parameters", {}).get("roi")
+        if polygon is not None:
+            from .polygon_roi import normalize_polygon
+            features.append(dict(type="Feature", geometry=normalize_polygon(polygon),
+                properties=dict(region=key, raster_path=region["raster_path"],
+                                inclusion="pixel_center", area="selected_whole_pixels")))
+    if features:
+        check_cancelled(cancelled)
+        (folder / "regions.geojson").write_text(json.dumps(dict(type="FeatureCollection", features=features),
+            ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     if kind == "profile":
         rows = ([i + 1, d / 1000, lon, lat, None if missing else elev,
                  None if missing else depth, missing]
@@ -45,7 +59,8 @@ def export_csv(folder, kind, result, cancelled=None):
     elif kind == "statistics":
         rows = [[label, unit, result["statistics"][key]] for key, label, unit in METRICS]
         rows += [[label, "km²", result["area"][key] / 1e6] for key, label in
-                 (("footprint_m2", "完整格网面积"), ("valid_m2", "有效面积"), ("invalid_m2", "无效面积"))]
+                 (("footprint_m2", "多边形入选格网面积" if features else "完整格网面积"),
+                  ("valid_m2", "有效面积"), ("invalid_m2", "无效面积"))]
         for item in result["sign_summary"]:
             rows.extend([[f"{item['label']} 像元数", "个", item["count"]],
                          [f"{item['label']} 面积", "km²", item["area_m2"] / 1e6]])

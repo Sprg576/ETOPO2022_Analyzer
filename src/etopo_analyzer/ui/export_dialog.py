@@ -12,6 +12,7 @@ from qgis.core import QgsRasterLayer
 from etopo_analyzer.core.export_service import (export_package, file_signature, result_sources,
     result_metadata, validate_sources, layer_processing)
 from .export_worker import ExportWorker
+from etopo_analyzer.app_paths import output_directory
 
 
 TITLES = {"map": "导出当前地图", "chart": "导出分析图", "csv": "导出分析数据 CSV", "raster": "导出栅格 GeoTIFF"}
@@ -82,7 +83,7 @@ class ExportDialog(QDialog):
         self.source_label.setWordWrap(True)
         self.source_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.fields.addRow("来源", self.source_label)
-        self.directory = QLineEdit(str(Path.cwd() / "outputs") if (Path.cwd() / "outputs").is_dir() else str(Path.cwd()), self)
+        self.directory = QLineEdit(str(output_directory()), self)
         self.browse_button = QPushButton("选择目录…", self)
         self.browse_button.clicked.connect(self.browse)
         directory_row = QHBoxLayout()
@@ -100,9 +101,13 @@ class ExportDialog(QDialog):
         self.dpi.setValue(300)
         self.include_profile = QCheckBox("包含已完成剖面线和 A/B 端点", self)
         self.include_profile.setEnabled(window._profile_result is not None)
+        self.include_polygons = QCheckBox("包含当前统计区、A/B 多边形及标识", self)
+        self.include_polygons.setChecked(bool(window.polygon_controls.export_regions()))
+        self.include_polygons.setEnabled(bool(window.polygon_controls.export_regions()))
         if mode == "map":
             self.fields.addRow("标题", self.title)
             self.fields.addRow(self.include_profile)
+            self.fields.addRow(self.include_polygons)
         if mode in ("map", "chart"):
             self.fields.addRow("图片宽度（像素）", self.pixels)
             self.fields.addRow("印刷分辨率（DPI）", self.dpi)
@@ -112,6 +117,7 @@ class ExportDialog(QDialog):
         if mode != "map":
             self.title.hide()
             self.include_profile.hide()
+            self.include_polygons.hide()
         layout.addLayout(self.fields)
         self.message = QLabel("每次生成独立成果目录和 manifest.json；同名成果不会被覆盖。", self)
         self.message.setWordWrap(True)
@@ -144,6 +150,7 @@ class ExportDialog(QDialog):
             signal.connect(self.invalidate_preview)
         self.title.textChanged.connect(self.invalidate_preview)
         self.include_profile.toggled.connect(self.invalidate_preview)
+        self.include_polygons.toggled.connect(self.invalidate_preview)
         self.update_source()
 
     def invalidate_preview(self, *args):
@@ -185,7 +192,8 @@ class ExportDialog(QDialog):
                     if profile:
                         validate_sources(result_sources(profile))
                     export_map(folder, self.window.map_canvas, self.title.text(), self.pixels.value(),
-                               self.dpi.value(), profile, lambda: self.cancelled, self.progress.setValue)
+                               self.dpi.value(), profile, lambda: self.cancelled, self.progress.setValue,
+                               polygons=self.window.polygon_controls.export_regions() if self.include_polygons.isChecked() else [])
                     path = folder / "map.png"
                 else:
                     return
@@ -241,6 +249,7 @@ class ExportDialog(QDialog):
         for widget in (self.choice, self.directory, self.browse_button, self.name, self.title, self.pixels, self.dpi, self.include_profile, self.start_button):
             widget.setEnabled(not busy)
         self.include_profile.setEnabled(not busy and self.window._profile_result is not None)
+        self.include_polygons.setEnabled(not busy and bool(self.window.polygon_controls.export_regions()))
         self.cancel_button.setText("取消导出" if busy else "关闭")
 
     def start(self):
@@ -281,7 +290,8 @@ class ExportDialog(QDialog):
                     with export_package(self.directory.text(), self.name.text(), "map", sources, metadata,
                                         lambda: self.cancelled) as folder:
                         metadata.update(export_map(folder, self.window.map_canvas, self.title.text(),
-                            self.pixels.value(), self.dpi.value(), profile, lambda: self.cancelled, self.progress.setValue))
+                            self.pixels.value(), self.dpi.value(), profile, lambda: self.cancelled, self.progress.setValue,
+                            polygons=self.window.polygon_controls.export_regions() if self.include_polygons.isChecked() else []))
                     self.succeeded(str(Path(self.directory.text()) / self.name.text()))
                 finally:
                     self.map_running = False
@@ -300,6 +310,13 @@ class ExportDialog(QDialog):
 
     def succeeded(self, path):
         self.output = path
+        import json
+        manifest_path = Path(path) / "manifest.json"
+        with manifest_path.open(encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        self.window.workspace_controls.record("export", self.name.text(), manifest["sources"],
+            [manifest_path, *[Path(path) / item["name"] for item in manifest["files"]]],
+            parameters=manifest["metadata"])
         self.progress.setValue(100)
         self.message.setText(f"导出完成：{path}")
         self.open_button.setEnabled(True)

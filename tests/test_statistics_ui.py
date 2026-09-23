@@ -34,6 +34,8 @@ class TestStatisticsUI(unittest.TestCase):
         self.layer = create_raster_layer(str(self.path))
         QgsProject.instance().addMapLayer(self.layer)
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import allow_unsaved_discard
+        allow_unsaved_discard(self)
         from processing_test_support import wrap_processing_calls
         wrap_processing_calls(self.window)
         # 本组验证统计状态，暂停无关地图渲染，避免渲染线程延迟释放临时 DEM。

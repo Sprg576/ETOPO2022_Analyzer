@@ -1,0 +1,14 @@
+ETOPO2022 Analyzer 1.0.0-rc1 启动修复
+
+适用于点击 Start.cmd / StartDemo.cmd 后只出现空白终端、主界面不显示的问题。
+
+1. 关闭之前打开的空白终端。
+2. 将补丁中的 main.py、Launch.ps1、Start.cmd、StartDemo.cmd、Launcher.exe、Launcher.cs
+   复制到程序根目录（该目录中应有 runtime 和 src 文件夹），替换同名文件。
+3. 双击 StartDemo.cmd 测试示例，或双击 Start.cmd 进入正式界面。
+
+不要把补丁单独放在另一个目录运行；本补丁不包含完整运行环境。
+已安装到其他目录时，请更新桌面快捷方式指向的安装目录。
+
+此次修复让应用主窗口正常显示，并使用无控制台启动器避免常驻空白终端。
+运行环境、原始 DEM 和已生成的分析成果无需更换。

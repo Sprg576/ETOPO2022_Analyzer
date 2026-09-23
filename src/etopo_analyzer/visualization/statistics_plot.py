@@ -22,7 +22,8 @@ def create_statistics_figure(result):
              color="#3B79B7", edgecolor="white", linewidth=0.3)
     axes.set_xlabel("高程（m）", fontproperties=font, labelpad=8)
     axes.set_ylabel("有效像元占比（%）" if percent else "有效像元数", fontproperties=font, labelpad=8)
-    axes.set_title("活动 DEM 全范围高程直方图", fontproperties=title_font, pad=10)
+    axes.set_title("多边形区域高程直方图" if "roi" in result.get("parameters", {}) else "活动 DEM 全范围高程直方图",
+                   fontproperties=title_font, pad=10)
     axes.tick_params(axis="both", labelsize=12)
     axes.set_xlim(edges[0], edges[-1])
     axes.set_axisbelow(True)

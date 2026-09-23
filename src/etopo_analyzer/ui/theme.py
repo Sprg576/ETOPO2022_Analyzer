@@ -177,7 +177,7 @@ QWidget#AnalysisPanel {
 }
 
 QToolButton#SectionHeader {
-    background: #E8F1FA;
+    background: #E8EDF2;
     border: none;
     border-top: 1px solid #C1CFDD;
     border-bottom: 1px solid #C1CFDD;
@@ -189,7 +189,7 @@ QToolButton#SectionHeader {
 }
 
 QToolButton#SectionHeader:hover {
-    background: #DCEAF8;
+    background: #DEE6EE;
 }
 
 QWidget#SectionBody {
@@ -204,7 +204,7 @@ QToolButton#PanelActionButton {
     background: #FFFFFF;
     border: 1px solid #BFCAD7;
     border-radius: 3px;
-    min-height: 29px;
+    min-height: 26px;
     padding: 3px 8px;
     text-align: left;
 }

@@ -1,20 +1,22 @@
 """分类树之外提供明确的全局叠放顺序；首项位于最上层。"""
 
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton, QSpinBox, QLabel
+from qgis.PyQt.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton, QSpinBox, QLabel, QSizePolicy
 from qgis.core import QgsRasterLayer
 
 
 class LayerOrderControls(QWidget):
     def __init__(self, window):
         super().__init__(window)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.window = window
         self.order = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(4)
         layout.addWidget(QLabel("叠放顺序（上方覆盖下方）"))
         self.list = QListWidget(self)
-        self.list.setMaximumHeight(115)
+        self.list.setMaximumHeight(60)
         layout.addWidget(self.list)
         row = QHBoxLayout()
         self.up = QPushButton("上移")
@@ -53,7 +55,9 @@ class LayerOrderControls(QWidget):
         self.list.clear()
         for key in self.order:
             layer = w._managed_layers[key]
-            item = QListWidgetItem(layer.name() + ("" if key in visible else "（隐藏）"))
+            from .data_summary import short_name
+            item = QListWidgetItem(short_name(layer) + ("" if key in visible else "（隐藏）"))
+            item.setToolTip(layer.name() + "\n" + layer.source())
             item.setData(Qt.UserRole, key)
             self.list.addItem(item)
             if key == selected:

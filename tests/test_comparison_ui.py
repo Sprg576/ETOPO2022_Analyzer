@@ -35,6 +35,8 @@ class TestComparisonUI(unittest.TestCase):
         create_dem(self.path_b, [[0, 2, 4]] * 3, transform=(121, .1, 0, 24, 0, -.1))
         self.a, self.b = [add_raster_layer(str(p)) for p in (self.path_a, self.path_b)]
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import allow_unsaved_discard
+        allow_unsaved_discard(self)
         from processing_test_support import wrap_processing_calls
         wrap_processing_calls(self.window)
         self.window.map_canvas.freeze(True)

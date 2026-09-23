@@ -5,6 +5,15 @@ from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtTest import QTest
 
 
+def allow_unsaved_discard(test):
+    """旧测试关闭窗口时明确丢弃；未保存专项测试覆盖各个回答。"""
+    from unittest.mock import patch
+    from qgis.PyQt.QtWidgets import QMessageBox
+    prompt = patch.object(test.window.workspace_controls, "ask_unsaved", return_value=QMessageBox.Discard)
+    prompt.start()
+    test.addCleanup(prompt.stop)
+
+
 def wait_for_processing(window, timeout=60):
     deadline = time.monotonic() + timeout
     while window._task_controls.worker is not None:

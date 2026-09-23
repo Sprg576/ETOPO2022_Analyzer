@@ -104,6 +104,8 @@ class ComparisonControls(QWidget):
             lines.append(f"{key}：{layer.width()}×{layer.height()}；分辨率 {layer.rasterUnitsPerPixelX():.6g}×{layer.rasterUnitsPerPixelY():.6g}\n"
                          f"范围 {extent.xMinimum():.4f}, {extent.yMinimum():.4f} — {extent.xMaximum():.4f}, {extent.yMaximum():.4f}")
         self.source_summary.setText("\n".join(lines))
+        if hasattr(self.window, "polygon_controls") and self.window.polygon_controls.checks["comparison"].isChecked():
+            self.source_summary.setText("仅统计 A/B 多边形内有效像元；允许在同一 DEM 上比较，可重叠。")
         self.source_summary.setToolTip("\n".join(layer.source() for layer in layers))
 
     def update_actions(self):
@@ -126,6 +128,7 @@ class ComparisonControls(QWidget):
         self.region_b.setCurrentIndex(a)
         self.region_a.blockSignals(False)
         self.region_b.blockSignals(False)
+        self.window.polygon_controls.swap()
         self.selection_changed()
 
     def invalidate(self, message, keep_result=False):
@@ -161,10 +164,13 @@ class ComparisonControls(QWidget):
         try:
             thresholds = [float(v.strip()) for v in self.thresholds.text().replace("，", ",").split(",")]
             validate_parameters(self.bins.value(), thresholds)
+            roi_a = self.window.polygon_controls.roi("a")
+            roi_b = self.window.polygon_controls.roi("b")
         except ValueError as exc:
             self.message.setText(f"参数无效：{exc}")
             return
-        self.worker = ComparisonWorker(self.task_id, layers[0].source(), layers[1].source(), self.bins.value(), thresholds, self)
+        self.worker = ComparisonWorker(self.task_id, layers[0].source(), layers[1].source(), self.bins.value(), thresholds, self,
+                                       roi_a=roi_a, roi_b=roi_b)
         self.worker.succeeded.connect(self.succeeded)
         self.worker.failed.connect(self.failed)
         self.worker.progress.connect(self.progress_changed)
@@ -232,6 +238,7 @@ class ComparisonControls(QWidget):
             self.failed(task_id, str(exc))
             return
         self.panel, self.result = panel, result
+        self.window.workspace_controls.record_result("comparison", result)
         self.show_action.setEnabled(True)
         self.message.setText(f"对比完成，用时 {result['elapsed_s']:.2f} 秒；差值方向 B−A。")
         self.show_result()
@@ -247,6 +254,7 @@ class ComparisonControls(QWidget):
         self.progress.hide()
         if self.message.text().startswith("已请求取消"):
             self.message.setText("区域对比已取消。")
+        self.window.analysis_task_label.setText(self.message.text())
         self.update_actions()
         if self.window._closing:
             QTimer.singleShot(0, self.window.close)

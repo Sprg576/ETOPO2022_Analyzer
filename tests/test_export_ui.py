@@ -35,6 +35,8 @@ class TestExportUI(unittest.TestCase):
         self.layer = create_raster_layer(str(self.source))
         QgsProject.instance().addMapLayer(self.layer)
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import allow_unsaved_discard
+        allow_unsaved_discard(self)
         from processing_test_support import wrap_processing_calls
         wrap_processing_calls(self.window)
         self.window.map_canvas.freeze(True)

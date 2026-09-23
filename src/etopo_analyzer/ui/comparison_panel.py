@@ -37,6 +37,9 @@ class ComparisonPanel(QWidget):
         label = QLabel(f"A：{Path(a['raster_path']).name}    B：{Path(b['raster_path']).name}    差值方向：B−A")
         label.setToolTip(f"A：{a['raster_path']}\nB：{b['raster_path']}")
         label.setWordWrap(True)
+        if any("roi" in region["parameters"] for region in (a, b)):
+            scopes = ["多边形" if "roi" in region["parameters"] else "DEM 全范围" for region in (a, b)]
+            label.setText(label.text() + f"\n统计范围：A {scopes[0]} / B {scopes[1]}；按像元中心入选，面积为整像元面积之和。")
         layout.addWidget(label)
         self.tabs = QTabWidget(self)
         layout.addWidget(self.tabs)

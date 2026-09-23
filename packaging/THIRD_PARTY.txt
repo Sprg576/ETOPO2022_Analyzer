@@ -1,0 +1,15 @@
+This distribution includes an unmodified local QGIS/OSGeo4W runtime snapshot.
+Original component licenses, notices and package metadata are retained in runtime.
+QGIS: runtime/apps/qgis-ltr/doc/LICENSE
+Python: runtime/apps/Python312/LICENSE.txt
+Other components: runtime/doc, runtime/share, runtime/etc/setup and Python package directories.
+
+QGIS official distribution and source information:
+https://qgis.org/download/
+https://github.com/qgis/QGIS
+OSGeo4W distribution and source package information:
+https://download.osgeo.org/osgeo4w/v2/
+
+The bundled runtime remains subject to each component's original license.
+The application source is included under src and main.py for inspection.
+No Microsoft fonts or private user data are included in the package.

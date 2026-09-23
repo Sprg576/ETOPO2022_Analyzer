@@ -113,6 +113,8 @@ class TestMainWindowPointQuery(unittest.TestCase):
             str(RASTER_PATH)
         )
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import allow_unsaved_discard
+        allow_unsaved_discard(self)
         from processing_test_support import wrap_processing_calls
         wrap_processing_calls(self.window)
         self.window.map_canvas.freeze(True)
@@ -306,7 +308,7 @@ class TestMainWindowPointQuery(unittest.TestCase):
         )
         self.assertEqual(
             self.window.layer_properties_table.rowCount(),
-            8,
+            9,
         )
         self.assertEqual(
             self.window.layer_properties_table.item(0, 0).text(),
@@ -314,7 +316,7 @@ class TestMainWindowPointQuery(unittest.TestCase):
         )
         self.assertEqual(
             self.window.layer_properties_table.item(0, 1).text(),
-            self.layer.name(),
+            "ETOPO2022 60s Surface",
         )
         self.assertEqual(
             self.window.analysis_source_label.accessibleName(),

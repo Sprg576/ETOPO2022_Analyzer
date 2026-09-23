@@ -7,6 +7,8 @@ def make_panel_responsive(panel):
     for form in panel.findChildren(QFormLayout):
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setVerticalSpacing(8)
+        form.setHorizontalSpacing(10)
     for label in panel.findChildren(QLabel):
         if label.wordWrap():
             policy = label.sizePolicy()

@@ -28,6 +28,8 @@ class TestLayerContextMenu(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.window = ETOPOAnalyzerMainWindow()
+        from processing_test_support import allow_unsaved_discard
+        allow_unsaved_discard(self)
         from processing_test_support import wrap_processing_calls
         wrap_processing_calls(self.window)
         self.window.map_canvas.freeze(True)
